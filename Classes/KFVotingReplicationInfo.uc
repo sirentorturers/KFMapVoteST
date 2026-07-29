@@ -4,7 +4,7 @@
 class KFVotingReplicationInfo extends VotingReplicationInfo
 	DependsOn(KFVotingHandler);
 
-#exec obj load file="KFAnnounc.uax" package="KFMapVoteV3"
+#exec obj load file="KFAnnounc.uax" package="KFMapVoteST"
 
 var array<string> RepArray,SortedArray; // Displayed rep string
 

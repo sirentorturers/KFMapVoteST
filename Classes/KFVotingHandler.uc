@@ -1,5 +1,18 @@
 // ====================================================================
 //  KFVotingHandler - Modification by Marco
+//  SirenTorturers Edition (KFMapVoteST):
+//    - GameConfig is now assembled at runtime from N config sections
+//      (GameConfigSec01 .. GameConfigSec08 below), each parsed from its
+//      own INI section. Every section gets its own fresh ~4095 char
+//      budget, so the total number of game-config entries is no longer
+//      capped by a single array's INI line-length limit.
+//    - The inherited GameConfig array (declared on the base xVotingHandler
+//      engine class) is left completely untouched in shape/type - it is
+//      simply populated by copying entries out of the sections below
+//      instead of being filled directly from a single config array.
+//      Every other class in this package (KFXMapListLoader,
+//      MVMultiColumnListBox, KFMapVotingPageX, etc.) reads GameConfig by
+//      index only, so none of them needed to change.
 // ====================================================================
 class KFVotingHandler extends xVotingHandler
 	Config(KFMapVote);
@@ -13,6 +26,73 @@ struct FMapRepType
 };
 var array<FMapRepType> RepArray; // Map reputation array, should be in sync with MapList array.
 
+// ------------------------------------------------------------------
+// Multi-array GameConfig sections.
+// Each of these is functionally identical in format to the original
+// single GameConfig= array, just split into separate INI keys so each
+// one gets its own 4095-char ceiling. Fill in as many or as few
+// sections as you need - empty sections are simply skipped.
+// Example INI line (same syntax as the original GameConfig= entries):
+//   GameConfigSec01=(GameClass="SirenTorturers.G",Prefix="KF-",Acronym="KF",GameName="00. Standard: Hard",Options="GameLength=178")
+// ------------------------------------------------------------------
+struct FGameConfigEntry
+{
+	var string GameClass;
+	var string Prefix;
+	var string Acronym;
+	var string GameName;
+	var string Mutators;
+	var string Options;
+};
+
+var config array<FGameConfigEntry> GameConfigSec01;
+var config array<FGameConfigEntry> GameConfigSec02;
+var config array<FGameConfigEntry> GameConfigSec03;
+var config array<FGameConfigEntry> GameConfigSec04;
+var config array<FGameConfigEntry> GameConfigSec05;
+var config array<FGameConfigEntry> GameConfigSec06;
+var config array<FGameConfigEntry> GameConfigSec07;
+var config array<FGameConfigEntry> GameConfigSec08;
+
+// Copies one FGameConfigEntry section into the live (inherited) GameConfig
+// array. Called once per section from BuildGameConfig() below.
+final function AppendGameConfigSection(array<FGameConfigEntry> Section)
+{
+	local int i, Base;
+
+	Base = GameConfig.Length;
+	GameConfig.Length = Base + Section.Length;
+	for( i=0; i<Section.Length; i++ )
+	{
+		GameConfig[Base+i].GameClass = Section[i].GameClass;
+		GameConfig[Base+i].Prefix    = Section[i].Prefix;
+		GameConfig[Base+i].Acronym   = Section[i].Acronym;
+		GameConfig[Base+i].GameName  = Section[i].GameName;
+		GameConfig[Base+i].Mutators  = Section[i].Mutators;
+		GameConfig[Base+i].Options   = Section[i].Options;
+	}
+}
+
+// Rebuilds GameConfig by concatenating every section, in order.
+// Sections are appended Sec01 -> Sec08, so index numbering (used by
+// DefaultGameConfig / CurrentGameConfig / admin map-switch indices)
+// stays stable as long as you don't reorder sections in the INI.
+final function BuildGameConfig()
+{
+	GameConfig.Length = 0;
+
+	AppendGameConfigSection(GameConfigSec01);
+	AppendGameConfigSection(GameConfigSec02);
+	AppendGameConfigSection(GameConfigSec03);
+	AppendGameConfigSection(GameConfigSec04);
+	AppendGameConfigSection(GameConfigSec05);
+	AppendGameConfigSection(GameConfigSec06);
+	AppendGameConfigSection(GameConfigSec07);
+	AppendGameConfigSection(GameConfigSec08);
+
+	log("___BuildGameConfig: assembled "$GameConfig.Length$" GameConfig entries from 8 sections.",'MapVote');
+}
+
 function PostBeginPlay()
 {
 	local int i;
@@ -24,6 +104,11 @@ function PostBeginPlay()
 	// disable voting in single player mode
 	if( Level.NetMode==NM_StandAlone )
 		return;
+
+	// Assemble the live GameConfig array out of the per-section arrays
+	// before anything below (or anything in KFXMapListLoader /
+	// MVMultiColumnListBox) reads GameConfig.
+	BuildGameConfig();
 
 	if(bKickVote)
 		log("Kick Voting Enabled",'MapVote');
