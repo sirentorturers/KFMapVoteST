@@ -99,16 +99,19 @@ function PostBeginPlay()
 
 	AddToPackageMap(); // Make sure in serverpackages.
 
+	// Assemble the live GameConfig array out of the per-section arrays
+	// BEFORE calling Super().PostBeginPlay(). We don't have source for
+	// xVotingHandler/VotingHandler, so we can't confirm the base class
+	// doesn't read/validate/replicate GameConfig during its own
+	// PostBeginPlay() - building it first, unconditionally, removes any
+	// dependency on what the base class does internally.
+	BuildGameConfig();
+
 	Super(VotingHandler).PostBeginPlay();
 
 	// disable voting in single player mode
 	if( Level.NetMode==NM_StandAlone )
 		return;
-
-	// Assemble the live GameConfig array out of the per-section arrays
-	// before anything below (or anything in KFXMapListLoader /
-	// MVMultiColumnListBox) reads GameConfig.
-	BuildGameConfig();
 
 	if(bKickVote)
 		log("Kick Voting Enabled",'MapVote');
