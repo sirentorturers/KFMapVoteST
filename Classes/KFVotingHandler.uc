@@ -1,18 +1,21 @@
 // ====================================================================
 //  KFVotingHandler - Modification by Marco
 //  SirenTorturers Edition (KFMapVoteST):
-//    - GameConfig is now assembled at runtime from N config sections
-//      (GameConfigSec01 .. GameConfigSec08 below), each parsed from its
-//      own INI section. Every section gets its own fresh ~4095 char
-//      budget, so the total number of game-config entries is no longer
-//      capped by a single array's INI line-length limit.
+//    - GameConfig is now assembled at runtime from KFGameConfigEntry
+//      PerObjectConfig instances (Config file: KFMapVoteModes.ini), one
+//      section per game mode, discovered via GetPerObjectNames()
+//      and constructed on demand via new(none, SectionName). Each mode's
+//      section is parsed completely independently of every other mode's,
+//      so there is no shared array and no shared 4095-character INI
+//      limit - a server can define as many modes as it wants.
 //    - The inherited GameConfig array (declared on the base xVotingHandler
 //      engine class) is left completely untouched in shape/type - it is
-//      simply populated by copying entries out of the sections below
-//      instead of being filled directly from a single config array.
-//      Every other class in this package (KFXMapListLoader,
-//      MVMultiColumnListBox, KFMapVotingPageX, etc.) reads GameConfig by
-//      index only, so none of them needed to change.
+//      simply populated by copying fields out of each KFGameConfigEntry
+//      instead of being filled directly from a single config array or
+//      from AppendGameConfigSection()-style sectioned arrays. Every other
+//      class in this package (KFXMapListLoader, MVMultiColumnListBox,
+//      KFMapVotingPageX, etc.) reads GameConfig by index only, so none
+//      of them needed to change.
 // ====================================================================
 class KFVotingHandler extends xVotingHandler
 	Config(KFMapVote);
@@ -27,70 +30,70 @@ struct FMapRepType
 var array<FMapRepType> RepArray; // Map reputation array, should be in sync with MapList array.
 
 // ------------------------------------------------------------------
-// Multi-array GameConfig sections.
-// Each of these is functionally identical in format to the original
-// single GameConfig= array, just split into separate INI keys so each
-// one gets its own 4095-char ceiling. Fill in as many or as few
-// sections as you need - empty sections are simply skipped.
-// Example INI line (same syntax as the original GameConfig= entries):
-//   GameConfigSec01=(GameClass="SirenTorturers.G",Prefix="KF-",Acronym="KF",GameName="00. Standard: Hard",Options="GameLength=178")
+// Discovers every KFGameConfigEntry section in KFMapVoteModes.ini,
+// loads each one, sorts by SortOrder (stable for ties - entries with
+// equal SortOrder keep the relative order GetPerObjectNames
+// returned them in), and appends the result into the live GameConfig
+// array. Called once per PostBeginPlay(), before Super(), so GameConfig
+// is fully populated before any base-class logic (or anything else in
+// this package) has a chance to read it.
 // ------------------------------------------------------------------
-struct FGameConfigEntry
-{
-	var string GameClass;
-	var string Prefix;
-	var string Acronym;
-	var string GameName;
-	var string Mutators;
-	var string Options;
-};
-
-var config array<FGameConfigEntry> GameConfigSec01;
-var config array<FGameConfigEntry> GameConfigSec02;
-var config array<FGameConfigEntry> GameConfigSec03;
-var config array<FGameConfigEntry> GameConfigSec04;
-var config array<FGameConfigEntry> GameConfigSec05;
-var config array<FGameConfigEntry> GameConfigSec06;
-var config array<FGameConfigEntry> GameConfigSec07;
-var config array<FGameConfigEntry> GameConfigSec08;
-
-// Copies one FGameConfigEntry section into the live (inherited) GameConfig
-// array. Called once per section from BuildGameConfig() below.
-final function AppendGameConfigSection(array<FGameConfigEntry> Section)
-{
-	local int i, Base;
-
-	Base = GameConfig.Length;
-	GameConfig.Length = Base + Section.Length;
-	for( i=0; i<Section.Length; i++ )
-	{
-		GameConfig[Base+i].GameClass = Section[i].GameClass;
-		GameConfig[Base+i].Prefix    = Section[i].Prefix;
-		GameConfig[Base+i].Acronym   = Section[i].Acronym;
-		GameConfig[Base+i].GameName  = Section[i].GameName;
-		GameConfig[Base+i].Mutators  = Section[i].Mutators;
-		GameConfig[Base+i].Options   = Section[i].Options;
-	}
-}
-
-// Rebuilds GameConfig by concatenating every section, in order.
-// Sections are appended Sec01 -> Sec08, so index numbering (used by
-// DefaultGameConfig / CurrentGameConfig / admin map-switch indices)
-// stays stable as long as you don't reorder sections in the INI.
 final function BuildGameConfig()
 {
+	local array<string> SectionNames;
+	local array<KFGameConfigEntry> Entries;
+	local KFGameConfigEntry Entry;
+	local int i, j, InsertAt;
+
 	GameConfig.Length = 0;
 
-	AppendGameConfigSection(GameConfigSec01);
-	AppendGameConfigSection(GameConfigSec02);
-	AppendGameConfigSection(GameConfigSec03);
-	AppendGameConfigSection(GameConfigSec04);
-	AppendGameConfigSection(GameConfigSec05);
-	AppendGameConfigSection(GameConfigSec06);
-	AppendGameConfigSection(GameConfigSec07);
-	AppendGameConfigSection(GameConfigSec08);
+	SectionNames = GetPerObjectNames("KFMapVoteModes", "KFGameConfigEntry", 1024);
+	if( SectionNames.Length == 0 )
+	{
+		log("___BuildGameConfig: no KFGameConfigEntry sections found in KFMapVoteModes.ini!",'MapVote');
+		return;
+	}
 
-	log("___BuildGameConfig: assembled "$GameConfig.Length$" GameConfig entries from 8 sections.",'MapVote');
+	// Load every entry first so we can sort by SortOrder before copying
+	// into GameConfig (GameConfig's final index order is what the vote
+	// GUI and every stored vote index are keyed against).
+	for( i=0; i<SectionNames.Length; i++ )
+	{
+		Entry = new(none, SectionNames[i]) class'KFGameConfigEntry';
+		if( Entry == none )
+		{
+			log("___BuildGameConfig: failed to load section '"$SectionNames[i]$"' - skipping.",'MapVote');
+			continue;
+		}
+
+		// Stable insertion sort by SortOrder. Entries sharing the same
+		// SortOrder (e.g. everyone left at the default 0) keep whatever
+		// order GetPerObjectNames returned them in.
+		InsertAt = Entries.Length;
+		for( j=0; j<Entries.Length; j++ )
+		{
+			if( Entry.SortOrder < Entries[j].SortOrder )
+			{
+				InsertAt = j;
+				break;
+			}
+		}
+		Entries.Insert(InsertAt, 1);
+		Entries[InsertAt] = Entry;
+	}
+
+	GameConfig.Length = Entries.Length;
+	for( i=0; i<Entries.Length; i++ )
+	{
+		GameConfig[i].GameClass = Entries[i].GameClass;
+		GameConfig[i].Prefix    = Entries[i].Prefix;
+		GameConfig[i].Acronym   = Entries[i].Acronym;
+		GameConfig[i].GameName  = Entries[i].GameName;
+		GameConfig[i].Mutators  = Entries[i].Mutators;
+		GameConfig[i].Options   = Entries[i].Options;
+	}
+
+	log("___BuildGameConfig: assembled "$GameConfig.Length$" GameConfig entries from KFMapVoteModes.ini.",'MapVote');
 }
 
 function PostBeginPlay()
@@ -99,12 +102,12 @@ function PostBeginPlay()
 
 	AddToPackageMap(); // Make sure in serverpackages.
 
-	// Assemble the live GameConfig array out of the per-section arrays
-	// BEFORE calling Super().PostBeginPlay(). We don't have source for
-	// xVotingHandler/VotingHandler, so we can't confirm the base class
-	// doesn't read/validate/replicate GameConfig during its own
-	// PostBeginPlay() - building it first, unconditionally, removes any
-	// dependency on what the base class does internally.
+	// Assemble the live GameConfig array out of KFGameConfigEntry
+	// PerObjectConfig sections BEFORE calling Super().PostBeginPlay().
+	// We don't have source for xVotingHandler/VotingHandler beyond what
+	// we've verified directly, so building GameConfig first, unconditionally,
+	// removes any dependency on what the base class does internally
+	// during its own PostBeginPlay().
 	BuildGameConfig();
 
 	Super(VotingHandler).PostBeginPlay();
