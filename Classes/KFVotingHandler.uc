@@ -43,7 +43,7 @@ final function BuildGameConfig()
 	local array<string> SectionNames;
 	local array<KFGameConfigEntry> Entries;
 	local KFGameConfigEntry Entry;
-	local int i, j, InsertAt;
+	local int i, j, BestIdx;
 
 	GameConfig.Length = 0;
 
@@ -65,21 +65,28 @@ final function BuildGameConfig()
 			log("___BuildGameConfig: failed to load section '"$SectionNames[i]$"' - skipping.",'MapVote');
 			continue;
 		}
+		Entries[Entries.Length] = Entry;
+	}
 
-		// Stable insertion sort by SortOrder. Entries sharing the same
-		// SortOrder (e.g. everyone left at the default 0) keep whatever
-		// order GetPerObjectNames returned them in.
-		InsertAt = Entries.Length;
-		for( j=0; j<Entries.Length; j++ )
+	// Single selection-sort pass by SortOrder, done once after every
+	// section is already loaded (rather than an insertion sort during
+	// loading) - stable for ties, entries sharing the same SortOrder
+	// (e.g. everyone left at the default 0) keep whatever relative order
+	// GetPerObjectNames returned them in.
+	for( i=0; i<Entries.Length-1; i++ )
+	{
+		BestIdx = i;
+		for( j=i+1; j<Entries.Length; j++ )
 		{
-			if( Entry.SortOrder < Entries[j].SortOrder )
-			{
-				InsertAt = j;
-				break;
-			}
+			if( Entries[j].SortOrder < Entries[BestIdx].SortOrder )
+				BestIdx = j;
 		}
-		Entries.Insert(InsertAt, 1);
-		Entries[InsertAt] = Entry;
+		if( BestIdx != i )
+		{
+			Entry = Entries[i];
+			Entries[i] = Entries[BestIdx];
+			Entries[BestIdx] = Entry;
+		}
 	}
 
 	GameConfig.Length = Entries.Length;
@@ -170,6 +177,21 @@ static event bool AcceptPlayInfoProperty(string PropertyName)
 {
 	if( PropertyName=="bMatchSetup" )
 		return true;
+
+	// GameConfig is now assembled at runtime from KFGameConfigEntry
+	// PerObjectConfig sections (see BuildGameConfig()) rather than being
+	// a single, directly-editable config array. The base xVotingHandler
+	// class exposes "GameConfig" to WebAdmin via a custom editor page
+	// (GameConfigPage) that assumes the old single-array format -
+	// that page is what crashes ("WebAdmin: Loading Game Types" ->
+	// Critical: GUIController.DesignModeHints) once GameConfig no longer
+	// matches its expectations. Since game modes are edited directly in
+	// KFMapVoteModes.ini rather than through WebAdmin, block "GameConfig"
+	// from PlayInfo/WebAdmin entirely instead of letting it reach that
+	// crashing page. Every other WebAdmin-exposed setting is untouched.
+	if( PropertyName=="GameConfig" )
+		return false;
+
 	return Super.AcceptPlayInfoProperty(PropertyName);
 }
 
