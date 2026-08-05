@@ -1,6 +1,6 @@
 # Voting Handler Fix ST
 
-A proper KFMapVote fork that resolves the biggest 2 bugs and also will provie additional features in the coming weeks.
+A fork of KFMapVoteV3SE that resolves the biggest 2 bugs of KFMapVote dating all the way back to UT2004 and also will provide additional features in the coming weeks.
 
 Immediate benefit of running this will be you will now have unlimited game modes and difficulties you can make available on your servers.
 
