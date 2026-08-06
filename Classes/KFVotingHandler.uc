@@ -23,11 +23,102 @@ class KFVotingHandler extends xVotingHandler
 var config bool bShowMapLike;
 var config bool bSpectatorsCanVote;
 
+// Display order for the difficulty dropdown's distinct values - lives in
+// KFMapVoteSettings (see that class), not directly on this class, since
+// this engine's UnrealScript doesn't support per-variable config-file
+// overrides (only whole-class Config() targets), and DifficultyOrder needs
+// to live in KFMapVoteModes.ini rather than this class's own KFMapVote.ini.
+// Populated once from the class default object in BuildGameConfig() below.
+var array<string> DifficultyOrder;
+
+// GameDifficulty[i] and GameModeGroup[i] are parallel to GameConfig[i] -
+// same index, same length, kept in lockstep by BuildGameConfig(). Not part
+// of the inherited GameConfig struct itself (that struct is declared on the
+// base engine xVotingHandler class and can't be extended), so this data
+// travels to clients as its own replicated arrays on KFVotingReplicationInfo
+// instead - see AddMapVoteReplicationInfo() below.
+var array<string> GameDifficulty;
+var array<string> GameModeGroup;
+
+// Difficulty-token aliases recognized when auto-deriving ModeGroup from a
+// KFGameConfigEntry's section ID (case-insensitive). Extend this list in
+// code (and recompile) if you introduce a new difficulty tier with a new
+// abbreviation convention in section IDs - or just set ModeGroup explicitly
+// on that one entry instead, no recompile needed for a one-off.
+// Fixed-size (static) array, not array<string> - matches the AnnounceSnds
+// precedent elsewhere in this package: dynamic arrays aren't reliably
+// initializable element-by-element in defaultproperties in this engine,
+// static arrays are.
+var string DifficultyIDAliases[6];
+
 struct FMapRepType
 {
 	var int Positive,Negative;
 };
 var array<FMapRepType> RepArray; // Map reputation array, should be in sync with MapList array.
+
+// ------------------------------------------------------------------
+// Strips a leading "NN_" numeric index token and a trailing recognized
+// difficulty-alias token from a KFGameConfigEntry section ID, leaving
+// the shared "mode family" name - e.g. "Classic_Sui" -> "Classic",
+// "LoneGunmen_Advanced_HOE" -> "LoneGunmen_Advanced" (deliberately
+// distinct from "LoneGunmen", since "Advanced" is a real gameplay
+// difference, not just a difficulty tier of the same mode).
+// Only strips the trailing token if it matches DifficultyIDAliases -
+// section IDs with no recognized difficulty suffix (e.g. "FTG") are
+// returned as-is, which correctly makes them a "family of one" that
+// stays visible under any difficulty filter.
+// ------------------------------------------------------------------
+final function string DeriveModeGroup(string SectionName)
+{
+	local int i, UnderscoreIdx, LastUnderscoreIdx;
+	local string Head, Remainder, LastToken;
+	local bool bAllDigits;
+
+	Remainder = SectionName;
+
+	// Strip a leading "NN_" (or "NNN_", etc.) numeric index token.
+	UnderscoreIdx = InStr(Remainder, "_");
+	if( UnderscoreIdx > 0 )
+	{
+		Head = Left(Remainder, UnderscoreIdx);
+		bAllDigits = true;
+		for( i=0; i<Len(Head); i++ )
+		{
+			if( Asc(Mid(Head,i,1)) < Asc("0") || Asc(Mid(Head,i,1)) > Asc("9") )
+			{
+				bAllDigits = false;
+				break;
+			}
+		}
+		if( bAllDigits )
+			Remainder = Mid(Remainder, UnderscoreIdx+1);
+	}
+
+	// Strip a trailing recognized difficulty-alias token, if present.
+	// (Plain left-to-right scan for the LAST underscore - UnrealScript's
+	// InStr only finds the first occurrence, so we just check every char.)
+	LastUnderscoreIdx = -1;
+	for( i=0; i<Len(Remainder); i++ )
+	{
+		if( Mid(Remainder,i,1) == "_" )
+			LastUnderscoreIdx = i;
+	}
+	if( LastUnderscoreIdx > -1 )
+	{
+		LastToken = Mid(Remainder, LastUnderscoreIdx+1);
+		for( i=0; i<ArrayCount(DifficultyIDAliases); i++ )
+		{
+			if( LastToken ~= DifficultyIDAliases[i] )
+			{
+				Remainder = Left(Remainder, LastUnderscoreIdx);
+				break;
+			}
+		}
+	}
+
+	return Remainder;
+}
 
 // ------------------------------------------------------------------
 // Discovers every KFGameConfigEntry section in KFMapVoteModes.ini,
@@ -46,6 +137,12 @@ final function BuildGameConfig()
 	local int i, j, BestIdx;
 
 	GameConfig.Length = 0;
+
+	// Reads KFMapVoteSettings' class default object, triggering its config
+	// load on first access if it hasn't happened yet this session - cheap
+	// to just re-copy on every BuildGameConfig() call (map change), so we
+	// don't need to special-case "only load once".
+	DifficultyOrder = class'KFMapVoteSettings'.default.DifficultyOrder;
 
 	SectionNames = GetPerObjectNames("KFMapVoteModes", "KFGameConfigEntry", 1024);
 	if( SectionNames.Length == 0 )
@@ -90,6 +187,8 @@ final function BuildGameConfig()
 	}
 
 	GameConfig.Length = Entries.Length;
+	GameDifficulty.Length = Entries.Length;
+	GameModeGroup.Length = Entries.Length;
 	for( i=0; i<Entries.Length; i++ )
 	{
 		GameConfig[i].GameClass = Entries[i].GameClass;
@@ -98,6 +197,15 @@ final function BuildGameConfig()
 		GameConfig[i].GameName  = Entries[i].GameName;
 		GameConfig[i].Mutators  = Entries[i].Mutators;
 		GameConfig[i].Options   = Entries[i].Options;
+
+		GameDifficulty[i] = Entries[i].Difficulty;
+		if( Entries[i].ModeGroup != "" )
+			GameModeGroup[i] = Entries[i].ModeGroup;
+		else
+			// NOTE: use the object's own Name, not SectionNames[i] - Entries
+			// has already been reordered by the SortOrder pass above, so
+			// SectionNames[i] no longer necessarily corresponds to Entries[i].
+			GameModeGroup[i] = DeriveModeGroup(string(Entries[i].Name));
 	}
 
 	log("___BuildGameConfig: assembled "$GameConfig.Length$" GameConfig entries from KFMapVoteModes.ini.",'MapVote');
@@ -334,6 +442,9 @@ function AddMapVoteReplicationInfo(PlayerController Player)
 
 	M.PlayerID = Player.PlayerReplicationInfo.PlayerID;
 	M.bShowMapLike = bShowMapLike;
+	M.GameDifficulty = GameDifficulty;
+	M.GameModeGroup = GameModeGroup;
+	M.DifficultyOrder = DifficultyOrder;
 	MVRI[MVRI.Length] = M;
 }
 
@@ -827,4 +938,11 @@ defaultproperties
 	bMatchSetup=false
 	bShowMapLike=false
 	bSpectatorsCanVote=true
+
+	DifficultyIDAliases(0)="Hard"
+	DifficultyIDAliases(1)="Sui"
+	DifficultyIDAliases(2)="Suicidal"
+	DifficultyIDAliases(3)="HoE"
+	DifficultyIDAliases(4)="HellOnEarth"
+	DifficultyIDAliases(5)="Brutal"
 }
