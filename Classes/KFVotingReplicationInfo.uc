@@ -13,21 +13,10 @@ var byte MapRepVote;
 var bool bClientHasInit;
 var bool bShowMapLike;
 
-// Difficulty-filter data for the map vote GUI's second dropdown. Parallel
-// to GameConfig (same index, same length) and DifficultyOrder - set once,
-// server-side, in KFVotingHandler.AddMapVoteReplicationInfo() when this
-// RepInfo is spawned for a connecting player, then sent to that client in
-// a single shot via bNetInitial (same pattern as bShowMapLike above) since
-// the whole set is small (one short string per mode, ~40-50 entries) and
-// doesn't need MapList/GameConfig's incremental per-tick replication.
-var array<string> GameDifficulty;
-var array<string> GameModeGroup;
-var array<string> DifficultyOrder;
-
 replication
 {
 	reliable if( Role==ROLE_Authority && bNetInitial )
-		bShowMapLike, GameDifficulty, GameModeGroup, DifficultyOrder;
+		bShowMapLike;
 	reliable if( Role==ROLE_Authority )
 		ReceiveMapInfoRep;
 	reliable if( Role<ROLE_Authority )

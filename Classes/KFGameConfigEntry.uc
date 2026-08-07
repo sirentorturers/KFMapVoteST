@@ -43,26 +43,6 @@ var config string Options;
 // Leave at the default (0) on every entry to just take file order as-is.
 var config int SortOrder;
 
-// Free-text difficulty label for the difficulty dropdown filter, e.g.
-// "Hard", "Suicidal", "Hell on Earth", "Brutal". Not tied to ScrnGames.ini's
-// MinDifficulty/MaxDifficulty in any way - those numbers can't distinguish
-// e.g. Brutal from Hell on Earth (both are MinDifficulty=MaxDifficulty=7 in
-// ScrnGames.ini), so this is a purely independent, admin-controlled label.
-// Leave blank to exclude this entry from difficulty filtering entirely
-// (it will always show, regardless of the selected difficulty).
-var config string Difficulty;
-
-// Optional override for which "mode family" this entry belongs to, used
-// to find a same-mode fallback when the player changes difficulty and this
-// exact entry doesn't exist at the new tier (e.g. "Standard: Hard" and
-// "Standard: Suicidal" should be recognized as the same family).
-// Leave blank and KFVotingHandler.BuildGameConfig() will derive it
-// automatically from the section's own instance ID by stripping a leading
-// "NN_" index and a trailing recognized difficulty token - e.g.
-// "Classic_Sui" -> "Classic". Only set this explicitly if the automatic
-// derivation guesses wrong for a particular section name.
-var config string ModeGroup;
-
 defaultproperties
 {
 	SortOrder=0
