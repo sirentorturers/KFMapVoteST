@@ -1,7 +1,15 @@
 //-----------------------------------------------------------
 // KFMapVotingPageX - Modification by Marco
 //-----------------------------------------------------------
-class KFMapVotingPageX extends ROMapVotingPage;
+// Config(KFMapVoteST) below applies only to config vars declared directly
+// on THIS class (LastSelectedDifficulty) - it doesn't affect any inherited
+// config vars from ROMapVotingPage/MapVotingPage, those keep whatever
+// config target their own declaring class already uses. This is a purely
+// client-side preference file (KFMapVoteST.ini, auto-created on each
+// player's own machine) - nothing to do with server config at all, and
+// nothing to do with the replication issue that caused the earlier crash.
+class KFMapVotingPageX extends ROMapVotingPage
+	Config(KFMapVoteST);
 
 var automated moEditBox SearchEdit;
 var automated moComboBox co_Difficulty;
@@ -11,6 +19,13 @@ var localized string strHelp;
 // OnDifficultyChanged() can tell whether a change actually happened and
 // so we always know what to compare candidate modes' distance against.
 var string CurrentDifficulty;
+
+// Remembers the player's last manually-chosen difficulty across menu opens
+// and map changes (persisted client-side, per player - see the Config()
+// clause above). InternalOnOpen() prefers this over the server's current
+// live difficulty when deciding what to default the dropdown to, as long
+// as it's still a valid choice among the currently available modes.
+var config string LastSelectedDifficulty;
 
 // Display order for the difficulty dropdown's distinct values. Hardcoded
 // (edit + recompile to change) rather than ini-configurable - see the
@@ -45,12 +60,16 @@ function InternalOnOpen()
 	{
 		BuildDifficultyList();
 
-		// Default to whatever difficulty the currently-selected mode (the
-		// server's live game type, per the base class's own selection
-		// logic above) actually is, so the vote screen opens already
-		// filtered to what's live right now instead of showing everything.
+		// Prefer the player's last manually-selected difficulty, if it's
+		// still a valid choice among the currently available modes (it
+		// might not be, e.g. right after KFMapVoteModes.ini drops a tier -
+		// falls back to the server's live difficulty in that case, or on
+		// this player's very first time opening the menu at all, when
+		// LastSelectedDifficulty is still blank).
 		CurrentDifficulty = "";
-		if( CurrentGameConfig() > -1 && CurrentGameConfig() < MVRI.GameConfig.Length )
+		if( LastSelectedDifficulty != "" && co_Difficulty.MyComboBox.List.FindExtra(LastSelectedDifficulty) > -1 )
+			CurrentDifficulty = LastSelectedDifficulty;
+		else if( CurrentGameConfig() > -1 && CurrentGameConfig() < MVRI.GameConfig.Length )
 			CurrentDifficulty = DeriveDifficulty(MVRI.GameConfig[CurrentGameConfig()].GameName);
 
 		if( CurrentDifficulty != "" )
@@ -508,6 +527,12 @@ final function int RebuildGameTypeList(string Difficulty, string PreferredGroup,
 
 	co_GameType.MyComboBox.List.Clear();
 
+	// Loop runs i=0..GameConfig.Length-1 in index order, and GameConfig's
+	// index order already IS the final display order the server intends -
+	// KFVotingHandler.BuildGameConfig() sorts entries by SortOrder (see
+	// ShouldSortBefore()) before ever copying them into GameConfig. So the
+	// items land in co_GameType's list, via AddItem() below, in exactly
+	// that order for free - nothing else to do here.
 	for( i=0; i<MVRI.GameConfig.Length; i++ )
 	{
 		EntryDifficulty = DeriveDifficulty(MVRI.GameConfig[i].GameName);
@@ -521,12 +546,13 @@ final function int RebuildGameTypeList(string Difficulty, string PreferredGroup,
 			VisibleIndices[VisibleIndices.Length] = i;
 		}
 	}
-	// Existing display-order limitation (not something this change
-	// addresses): this re-alphabetizes the filtered list the same way the
-	// base class does for the unfiltered one - see BuildGameConfig()'s and
-	// BuildDifficultyList()'s comments. Drop this line later if/when
-	// SortOrder's client-side display bug gets fixed.
-	co_GameType.MyComboBox.List.SortList();
+	// Deliberately NOT calling co_GameType.MyComboBox.List.SortList() here
+	// (the base class's own InternalOnOpen() does call it, on its own
+	// initial population of co_GameType - harmless, since this function
+	// unconditionally rebuilds and replaces that population immediately
+	// afterward on every menu open). SortList() is exactly what was
+	// silently re-alphabetizing this list regardless of SortOrder before -
+	// see KFVotingHandler.BuildGameConfig()'s ShouldSortBefore() comments.
 
 	// Prefer keeping the exact same mode selected, if it survived the filter.
 	d = co_GameType.MyComboBox.List.FindExtra(string(PreviousIdx));
@@ -588,6 +614,14 @@ function OnDifficultyChanged(GUIComponent Sender)
 		PreferredGroup = DeriveModeGroup(MVRI.GameConfig[PreviousIdx].GameName);
 
 	CurrentDifficulty = NewDifficulty;
+
+	// Remember this choice for next time (this map change, or a future
+	// session entirely - SaveConfig() flushes to disk immediately rather
+	// than waiting for a clean client shutdown, in case the player
+	// disconnects abruptly).
+	LastSelectedDifficulty = NewDifficulty;
+	SaveConfig();
+
 	ResolvedIdx = RebuildGameTypeList(NewDifficulty, PreferredGroup, PreviousIdx);
 
 	if( ResolvedIdx > -1 )

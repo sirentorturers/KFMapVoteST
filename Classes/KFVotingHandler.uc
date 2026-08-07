@@ -30,13 +30,31 @@ struct FMapRepType
 var array<FMapRepType> RepArray; // Map reputation array, should be in sync with MapList array.
 
 // ------------------------------------------------------------------
+// Comparator for BuildGameConfig()'s sort pass: numbered entries
+// (SortOrder > 0) sort ascending by that number and always come before
+// unnumbered ones; entries left at the default SortOrder=0 come after
+// all numbered entries, sorted alphabetically by GameName (case-
+// insensitive). Returns true if A belongs before B.
+// ------------------------------------------------------------------
+final function bool ShouldSortBefore(KFGameConfigEntry A, KFGameConfigEntry B)
+{
+	if( A.SortOrder > 0 && B.SortOrder > 0 )
+		return A.SortOrder < B.SortOrder;
+	if( A.SortOrder > 0 && B.SortOrder == 0 )
+		return true;
+	if( A.SortOrder == 0 && B.SortOrder > 0 )
+		return false;
+	// Both left at the default (0) - alphabetical by GameName.
+	return Caps(A.GameName) < Caps(B.GameName);
+}
+
+// ------------------------------------------------------------------
 // Discovers every KFGameConfigEntry section in KFMapVoteModes.ini,
-// loads each one, sorts by SortOrder (stable for ties - entries with
-// equal SortOrder keep the relative order GetPerObjectNames
-// returned them in), and appends the result into the live GameConfig
-// array. Called once per PostBeginPlay(), before Super(), so GameConfig
-// is fully populated before any base-class logic (or anything else in
-// this package) has a chance to read it.
+// loads each one, sorts by SortOrder (see ShouldSortBefore() above),
+// and appends the result into the live GameConfig array. Called once
+// per PostBeginPlay(), before Super(), so GameConfig is fully populated
+// before any base-class logic (or anything else in this package) has a
+// chance to read it.
 // ------------------------------------------------------------------
 final function BuildGameConfig()
 {
@@ -70,15 +88,17 @@ final function BuildGameConfig()
 
 	// Single selection-sort pass by SortOrder, done once after every
 	// section is already loaded (rather than an insertion sort during
-	// loading) - stable for ties, entries sharing the same SortOrder
-	// (e.g. everyone left at the default 0) keep whatever relative order
-	// GetPerObjectNames returned them in.
+	// loading). Entries with SortOrder > 0 sort ascending by that number
+	// first (ties keep whatever relative order GetPerObjectNames returned
+	// them in - stable); everything left at the default SortOrder=0 comes
+	// after all of those, sorted alphabetically by GameName - see
+	// ShouldSortBefore() below.
 	for( i=0; i<Entries.Length-1; i++ )
 	{
 		BestIdx = i;
 		for( j=i+1; j<Entries.Length; j++ )
 		{
-			if( Entries[j].SortOrder < Entries[BestIdx].SortOrder )
+			if( ShouldSortBefore(Entries[j], Entries[BestIdx]) )
 				BestIdx = j;
 		}
 		if( BestIdx != i )
