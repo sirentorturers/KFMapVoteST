@@ -123,9 +123,63 @@ final function BuildGameConfig()
 	log("___BuildGameConfig: assembled "$GameConfig.Length$" GameConfig entries from KFMapVoteModes.ini.",'MapVote');
 }
 
+// ------------------------------------------------------------------
+// Parses the numeric value out of a "...GameLength=NNN..." token inside a
+// string - e.g. a GameConfig Options string like "GameLength=178" or,
+// for Objective modes, "Difficulty=4?GameLength=16" - or a full level URL
+// string like "KF-Afghanistan-ST?Game=SirenTorturers.G?GameLength=183".
+// Returns -1 if not found.
+// ------------------------------------------------------------------
+final function int ExtractGameLength(string Options)
+{
+	local int Idx, EndIdx, i;
+	local string Tail, NumStr;
+
+	Idx = InStr(Options, "GameLength=");
+	if( Idx == -1 )
+		return -1;
+
+	Tail = Mid(Options, Idx + Len("GameLength="));
+	EndIdx = InStr(Tail, "?");
+	if( EndIdx > -1 )
+		NumStr = Left(Tail, EndIdx);
+	else
+		NumStr = Tail;
+
+	// Trim to leading digits only, defensively, in case of trailing junk.
+	for( i=0; i<Len(NumStr); i++ )
+	{
+		if( Asc(Mid(NumStr,i,1)) < Asc("0") || Asc(Mid(NumStr,i,1)) > Asc("9") )
+		{
+			NumStr = Left(NumStr, i);
+			break;
+		}
+	}
+	if( NumStr == "" )
+		return -1;
+	return int(NumStr);
+}
+
+// ------------------------------------------------------------------
+// Reads the live GameLength off Level.GetLocalURL() - a native LevelInfo
+// function returning the level's full current URL as a string, including
+// options (e.g. "KF-Afghanistan-ST?Game=SirenTorturers.G?GameLength=183").
+// Same native-function family as Level.GetURLMap(), which is already
+// proven working elsewhere in this project (StMapNameWriter) - this is
+// the sibling call that returns the whole URL instead of just the map
+// name. Feeds the result into ExtractGameLength() above. Returns -1 if
+// no GameLength option is present (or the call itself is somehow
+// unavailable - callers treat -1 as "can't verify, don't use this check").
+// ------------------------------------------------------------------
+final function int GetLiveGameLength()
+{
+	return ExtractGameLength(Level.GetLocalURL());
+}
+
 function PostBeginPlay()
 {
 	local int i;
+	local int LiveGameLength;
 
 	AddToPackageMap(); // Make sure in serverpackages.
 
@@ -154,13 +208,34 @@ function PostBeginPlay()
 		// check current game settings
 		if( GameConfig.Length > 0 )
 		{
-			if( !(string(Level.Game.Class) ~= GameConfig[CurrentGameConfig].GameClass) )
+			// LiveGameLength disambiguates entries that share a GameClass
+			// (the vast majority here - "SirenTorturers.G" alone covers
+			// Standard, Dying Floor, Kitchen Sink, Casino Royale, and
+			// several others). Without this, CurrentGameConfig's cached
+			// index only gets re-validated against GameClass, which is
+			// almost always a loose enough match to pass even when the
+			// cached index is stale (e.g. after any KFMapVoteModes.ini
+			// edit shifts array positions) - so a stale index silently
+			// keeps pointing at whatever now occupies that slot, landing
+			// on the right mode family by coincidence but the wrong
+			// difficulty tier. Confirmed this exact failure mode directly
+			// against a live KFMapVote.ini snapshot before writing this.
+			LiveGameLength = GetLiveGameLength();
+
+			if( !(string(Level.Game.Class) ~= GameConfig[CurrentGameConfig].GameClass)
+				|| (LiveGameLength > -1 && ExtractGameLength(GameConfig[CurrentGameConfig].Options) != LiveGameLength) )
 			{
 				CurrentGameConfig = 0;
-				// find matching game type in game config
+				// Find the entry that's an exact match: same GameClass AND
+				// same GameLength, if we could read one. Falls back to
+				// GameClass-only (the original behavior) if LiveGameLength
+				// couldn't be determined, so a failed/unavailable
+				// GetLiveGameLength() call degrades no worse than before
+				// this change rather than breaking mode-matching entirely.
 				for( i=0; i<GameConfig.Length; i++)
 				{
-					if(GameConfig[i].GameClass ~= string(Level.Game.Class))
+					if( GameConfig[i].GameClass ~= string(Level.Game.Class)
+						&& (LiveGameLength == -1 || ExtractGameLength(GameConfig[i].Options) == LiveGameLength) )
 					{
 						CurrentGameConfig = i;
 						break;

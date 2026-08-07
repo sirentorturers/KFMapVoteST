@@ -1,15 +1,7 @@
 //-----------------------------------------------------------
 // KFMapVotingPageX - Modification by Marco
 //-----------------------------------------------------------
-// Config(KFMapVoteST) below applies only to config vars declared directly
-// on THIS class (LastSelectedDifficulty) - it doesn't affect any inherited
-// config vars from ROMapVotingPage/MapVotingPage, those keep whatever
-// config target their own declaring class already uses. This is a purely
-// client-side preference file (KFMapVoteST.ini, auto-created on each
-// player's own machine) - nothing to do with server config at all, and
-// nothing to do with the replication issue that caused the earlier crash.
-class KFMapVotingPageX extends ROMapVotingPage
-	Config(KFMapVoteST);
+class KFMapVotingPageX extends ROMapVotingPage;
 
 var automated moEditBox SearchEdit;
 var automated moComboBox co_Difficulty;
@@ -19,13 +11,6 @@ var localized string strHelp;
 // OnDifficultyChanged() can tell whether a change actually happened and
 // so we always know what to compare candidate modes' distance against.
 var string CurrentDifficulty;
-
-// Remembers the player's last manually-chosen difficulty across menu opens
-// and map changes (persisted client-side, per player - see the Config()
-// clause above). InternalOnOpen() prefers this over the server's current
-// live difficulty when deciding what to default the dropdown to, as long
-// as it's still a valid choice among the currently available modes.
-var config string LastSelectedDifficulty;
 
 // Display order for the difficulty dropdown's distinct values. Hardcoded
 // (edit + recompile to change) rather than ini-configurable - see the
@@ -56,20 +41,19 @@ function InternalOnOpen()
 	// populated - which super.InternalOnOpen() already guarantees before
 	// returning normally (it bails to a separate "still loading" page
 	// otherwise). No extra replication-readiness guard needed.
+	//
+	// The default difficulty is whatever CurrentGameConfig() (MVRI's
+	// CurrentGameConfig, set server-side in KFVotingHandler.PostBeginPlay())
+	// actually is right now - i.e. the true live mode/difficulty, computed
+	// from GameClass+GameLength server-side rather than any per-player
+	// preference. That naturally tracks "the last thing voted for and
+	// traveled to" without needing to persist anything client-side at all.
 	if( MVRI != none && MVRI.bMapVote && MVRI.GameConfig.Length > 0 )
 	{
 		BuildDifficultyList();
 
-		// Prefer the player's last manually-selected difficulty, if it's
-		// still a valid choice among the currently available modes (it
-		// might not be, e.g. right after KFMapVoteModes.ini drops a tier -
-		// falls back to the server's live difficulty in that case, or on
-		// this player's very first time opening the menu at all, when
-		// LastSelectedDifficulty is still blank).
 		CurrentDifficulty = "";
-		if( LastSelectedDifficulty != "" && co_Difficulty.MyComboBox.List.FindExtra(LastSelectedDifficulty) > -1 )
-			CurrentDifficulty = LastSelectedDifficulty;
-		else if( CurrentGameConfig() > -1 && CurrentGameConfig() < MVRI.GameConfig.Length )
+		if( CurrentGameConfig() > -1 && CurrentGameConfig() < MVRI.GameConfig.Length )
 			CurrentDifficulty = DeriveDifficulty(MVRI.GameConfig[CurrentGameConfig()].GameName);
 
 		if( CurrentDifficulty != "" )
@@ -614,13 +598,6 @@ function OnDifficultyChanged(GUIComponent Sender)
 		PreferredGroup = DeriveModeGroup(MVRI.GameConfig[PreviousIdx].GameName);
 
 	CurrentDifficulty = NewDifficulty;
-
-	// Remember this choice for next time (this map change, or a future
-	// session entirely - SaveConfig() flushes to disk immediately rather
-	// than waiting for a clean client shutdown, in case the player
-	// disconnects abruptly).
-	LastSelectedDifficulty = NewDifficulty;
-	SaveConfig();
 
 	ResolvedIdx = RebuildGameTypeList(NewDifficulty, PreferredGroup, PreviousIdx);
 
