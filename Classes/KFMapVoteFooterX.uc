@@ -1,6 +1,10 @@
 class KFMapVoteFooterX extends MapVoteFooter;
 
 var localized string strLiked, stdDisliked;
+var localized string strMapAuthor;
+
+var automated GUIImage i_MapPreview;
+var automated GUILabel l_MapPreviewAuthor, l_MapPreviewNone;
 
 // C&P to fix trimming the first typed character
 function InitComponent(GUIController InController, GUIComponent InOwner)
@@ -29,6 +33,33 @@ function InitComponent(GUIController InController, GUIComponent InOwner)
 		}
 	}
 	OnDraw=MyOnDraw;
+
+	UpdateMapPreview("");
+}
+
+// Pulls Screenshot/Author off the map's LevelSummary without loading the
+// full level - same DynamicLoadObject pattern already proven working in
+// MVMapInfoPage.ReadMapInfo() (used there for the right-click map info
+// popup; this reuses it inline instead of guessing at a new lookup path).
+function UpdateMapPreview(string MapName)
+{
+	local LevelSummary LS;
+	local Material Screenie;
+
+	if (MapName != "")
+		LS = LevelSummary(DynamicLoadObject(MapName $ ".LevelSummary", Class'LevelSummary'));
+
+	if (LS != None)
+		Screenie = LS.Screenshot;
+
+	i_MapPreview.Image = Screenie;
+	i_MapPreview.SetVisibility(Screenie != None);
+	l_MapPreviewNone.SetVisibility(Screenie == None);
+
+	if (LS != None && LS.Author != "")
+		l_MapPreviewAuthor.Caption = strMapAuthor $ ":" @ LS.Author;
+	else
+		l_MapPreviewAuthor.Caption = "";
 }
 
 function bool MyOnDraw(canvas C)
@@ -48,7 +79,7 @@ function bool MyOnDraw(canvas C)
 	if (XL>w)
 		w = XL;
 
-	w = w*3;
+	w = w*2.4;
 	w = ActualWidth(w);
 
 	l -= w;
@@ -67,7 +98,7 @@ function bool MyOnDraw(canvas C)
 	b_Accept.WinLeft = l;
 
 
-	ed_Chat.WinLeft   = sb_Background.ActualLeft() + sb_Background.ImageOffset[0];
+	ed_Chat.WinLeft   = sb_Background.ActualLeft() + sb_Background.ActualWidth() * 0.32;
 	ed_Chat.WinWidth  = L - ed_Chat.WinLeft;
 	ed_Chat.WinHeight = 25;
 	ed_Chat.WinTop    = t;
@@ -126,6 +157,7 @@ defaultproperties
 {
 	strLiked="Liked the current map"
 	stdDisliked="Disliked the current map"
+	strMapAuthor="Author"
 
 	Begin Object Class=AltSectionBackground Name=MapvoteFooterBackground
 		bFillClient=True
@@ -147,8 +179,8 @@ defaultproperties
 		bVisibleWhenEmpty=True
 		OnCreateComponent=ChatScrollBox.InternalOnCreateComponent
 		StyleName="ServerBrowserGrid"
-		WinLeft=0.02
-		WinWidth=0.96
+		WinLeft=0.32
+		WinWidth=0.66
 		WinTop=0.02
 		WinHeight=0.76
 		TabOrder=2
@@ -157,6 +189,49 @@ defaultproperties
 		bNeverFocus=True
 	End Object
 	lb_Chat=ChatScrollBox
+
+	Begin Object Class=GUIImage Name=MapPreviewImage
+		ImageStyle=ISTY_Scaled
+		ImageRenderStyle=MSTY_Normal
+		WinLeft=0.02
+		WinTop=0.02
+		WinWidth=0.28
+		WinHeight=0.58
+		bBoundToParent=True
+		bScaleToParent=True
+	End Object
+	i_MapPreview=MapPreviewImage
+
+	Begin Object Class=GUILabel Name=MapPreviewNoneLabel
+		Caption="No Preview Available"
+		TextAlign=TXTA_Center
+		VertAlign=TXTA_Center
+		TextColor=(B=0,G=255,R=247)
+		TextFont="UT2HeaderFont"
+		bTransparent=False
+		bMultiLine=True
+		WinLeft=0.02
+		WinTop=0.02
+		WinWidth=0.28
+		WinHeight=0.58
+		bBoundToParent=True
+		bScaleToParent=True
+	End Object
+	l_MapPreviewNone=MapPreviewNoneLabel
+
+	Begin Object Class=GUILabel Name=MapPreviewAuthorLabel
+		Caption=""
+		TextAlign=TXTA_Center
+		TextColor=(B=255,G=255,R=255)
+		TextFont="UT2ServerListFont"
+		WinLeft=0.02
+		WinTop=0.61
+		WinWidth=0.28
+		WinHeight=0.06
+		bBoundToParent=True
+		bScaleToParent=True
+	End Object
+	l_MapPreviewAuthor=MapPreviewAuthorLabel
 
 	Begin Object Class=moEditBox Name=ChatEditbox
 		CaptionWidth=0.150000

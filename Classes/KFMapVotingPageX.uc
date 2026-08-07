@@ -84,6 +84,32 @@ final function int CurrentGameConfig()
 	return int(co_GameType.GetExtra());
 }
 
+// Single-click handler inherited from XVoting.MapVotingPage, already wired
+// as OnClick for both lb_VoteCountListBox and lb_MapListBox in
+// MapVotingPage.InternalOnOpen(). Overridden here purely to also drive the
+// inline map preview panel (image + author) in the footer - preserves the
+// base selection/highlight behavior via Super first.
+function bool MapListClick(GUIComponent Sender)
+{
+	local bool bResult;
+	local string MapName;
+
+	bResult = Super.MapListClick(Sender);
+
+	if( Sender == lb_VoteCountListBox.List )
+		MapName = MapVoteCountMultiColumnList(Sender).GetSelectedMapName();
+	else if( Sender == lb_MapListBox.List )
+		MapName = MapVoteMultiColumnList(Sender).GetSelectedMapName();
+
+	// f_Chat is declared as base MapVoteFooter in XVoting.VotingPage -
+	// UpdateMapPreview only exists on our KFMapVoteFooterX subclass, so an
+	// explicit downcast is required (base-typed refs don't expose
+	// subclass-only members in this engine).
+	KFMapVoteFooterX(f_Chat).UpdateMapPreview(MapName);
+
+	return bResult;
+}
+
 // Also allow admins force mapswitch.
 final function SendAdminSwitch(GUIComponent Sender)
 {
