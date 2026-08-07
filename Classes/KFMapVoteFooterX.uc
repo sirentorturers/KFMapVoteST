@@ -1,10 +1,16 @@
 class KFMapVoteFooterX extends MapVoteFooter;
 
 var localized string strLiked, stdDisliked;
-var localized string strMapAuthor;
+var localized string strMapAuthor, strPlayers;
 
 var automated GUIImage i_MapPreview;
-var automated GUILabel l_MapPreviewAuthor, l_MapPreviewNone;
+var automated GUILabel l_MapPreviewInfo, l_MapPreviewNone;
+
+// Native map cache (screenshot/author/player-count per map, pre-resolved
+// at cache-build time) - same source XVoting.MapInfoPage.ReadMapInfo()
+// prefers before falling back to a live LevelSummary load. Populated once
+// below, same as MapInfoPage.InitComponent() does.
+var array<CacheManager.MapRecord> CachedMaps;
 
 // C&P to fix trimming the first typed character
 function InitComponent(GUIController InController, GUIComponent InOwner)
@@ -34,38 +40,145 @@ function InitComponent(GUIController InController, GUIComponent InOwner)
 	}
 	OnDraw=MyOnDraw;
 
+	class'CacheManager'.static.GetMapList(CachedMaps);
+
 	UpdateMapPreview("");
 }
 
-// Pulls Screenshot/Author off the map's LevelSummary without loading the
-// full level - same DynamicLoadObject pattern already proven working in
-// MVMapInfoPage.ReadMapInfo() (used there for the right-click map info
-// popup; this reuses it inline instead of guessing at a new lookup path).
+final function int FindCachedMapIndex(string MapName)
+{
+	local int i;
+
+	for (i = 0; i < CachedMaps.Length; i++)
+		if (CachedMaps[i].MapName == MapName)
+			return i;
+	return -1;
+}
+
+// Pulls Screenshot/Author/PlayerCount for MapName from three sources, in
+// order:
+//   1. KFMapVotePreviews.ini (KFMapPreviewEntry) - a bundled override
+//      pointing into a shared texture package shipped with this mod
+//      (see KFMapPreviewEntry.uc). This is the only source guaranteed
+//      present on every client regardless of whether they've ever
+//      downloaded MapName's own map package.
+//   2. The native CacheManager map cache (CachedMaps) - built from
+//      whatever maps this specific client already has installed
+//      locally.
+//   3. A live LevelSummary DynamicLoadObject - same as (2), only works
+//      for maps already installed locally.
+// (2) and (3) were the original implementation and turned out to both
+// fail identically ("Can't find file for package") for any map the
+// connecting client hasn't played before - confirmed via client log -
+// since KF1 only downloads a map's package when actually traveling to
+// it, never just for browsing the vote menu. Hence (1).
 function UpdateMapPreview(string MapName)
 {
+	local KFMapPreviewEntry PreviewEntry;
 	local LevelSummary LS;
 	local Material Screenie;
+	local string AuthorLine, PlayersLine;
+	local string MapAuthor;
+	local int MinPlayers, MaxPlayers, CacheIdx;
+	local bool bHavePlayerCount;
+
+	log("UpdateMapPreview: MapName='"$MapName$"'", 'MapPreviewST');
 
 	if (MapName != "")
-		LS = LevelSummary(DynamicLoadObject(MapName $ ".LevelSummary", Class'LevelSummary'));
+	{
+		PreviewEntry = new(none, MapName) class'KFMapPreviewEntry';
+		log("UpdateMapPreview: bundled override TextureRef='"$PreviewEntry.TextureRef$"'", 'MapPreviewST');
 
-	if (LS != None)
-		Screenie = LS.Screenshot;
+		if (PreviewEntry.TextureRef != "")
+		{
+			Screenie = Material(DynamicLoadObject(PreviewEntry.TextureRef, class'Material'));
+			log("UpdateMapPreview: bundled override DynamicLoadObject result Screenie="$Screenie, 'MapPreviewST');
+
+			MapAuthor = PreviewEntry.Author;
+			MinPlayers = PreviewEntry.PlayerCountMin;
+			MaxPlayers = PreviewEntry.PlayerCountMax;
+			bHavePlayerCount = true;
+		}
+		else
+		{
+			CacheIdx = FindCachedMapIndex(MapName);
+			log("UpdateMapPreview: CacheIdx="$CacheIdx$" (CachedMaps.Length="$CachedMaps.Length$")", 'MapPreviewST');
+
+			if (CacheIdx != -1)
+			{
+				log("UpdateMapPreview: cache hit - ScreenshotRef='"$CachedMaps[CacheIdx].ScreenshotRef$"' Author='"$CachedMaps[CacheIdx].Author$"' PlayerCount="$CachedMaps[CacheIdx].PlayerCountMin$"-"$CachedMaps[CacheIdx].PlayerCountMax, 'MapPreviewST');
+
+				if (CachedMaps[CacheIdx].ScreenshotRef != "")
+					Screenie = Material(DynamicLoadObject(CachedMaps[CacheIdx].ScreenshotRef, class'Material'));
+
+				log("UpdateMapPreview: cache branch DynamicLoadObject result Screenie="$Screenie, 'MapPreviewST');
+
+				MapAuthor = CachedMaps[CacheIdx].Author;
+				MinPlayers = CachedMaps[CacheIdx].PlayerCountMin;
+				MaxPlayers = CachedMaps[CacheIdx].PlayerCountMax;
+				bHavePlayerCount = true;
+			}
+			else
+			{
+				LS = LevelSummary(DynamicLoadObject(MapName $ ".LevelSummary", Class'LevelSummary'));
+				log("UpdateMapPreview: cache miss - fallback LevelSummary DynamicLoadObject result LS="$LS, 'MapPreviewST');
+				if (LS != None)
+				{
+					Screenie = LS.Screenshot;
+					log("UpdateMapPreview: fallback LS.Screenshot="$Screenie$" LS.Author='"$LS.Author$"' LS.IdealPlayerCount="$LS.IdealPlayerCountMin$"-"$LS.IdealPlayerCountMax, 'MapPreviewST');
+					MapAuthor = LS.Author;
+					MinPlayers = LS.IdealPlayerCountMin;
+					MaxPlayers = LS.IdealPlayerCountMax;
+					bHavePlayerCount = true;
+				}
+			}
+		}
+	}
+
+	log("UpdateMapPreview: final Screenie="$Screenie, 'MapPreviewST');
 
 	i_MapPreview.Image = Screenie;
 	i_MapPreview.SetVisibility(Screenie != None);
 	l_MapPreviewNone.SetVisibility(Screenie == None);
 
-	if (LS != None && LS.Author != "")
-		l_MapPreviewAuthor.Caption = strMapAuthor $ ":" @ LS.Author;
+	if (MapAuthor != "")
+		AuthorLine = strMapAuthor $ ":" @ MapAuthor;
+
+	if (bHavePlayerCount)
+		PlayersLine = string(MinPlayers) $ "-" $ string(MaxPlayers) @ strPlayers;
+
+	// Single multi-line label (same "|"-joined-lines convention already
+	// used by l_MapPreviewNone's own text and by strHelp elsewhere in this
+	// package) instead of two independently-positioned labels - two
+	// separately stacked GUILabels were rendering on top of each other
+	// regardless of the WinTop gap between them.
+	if (AuthorLine != "" && PlayersLine != "")
+		l_MapPreviewInfo.Caption = AuthorLine $ "|" $ PlayersLine;
 	else
-		l_MapPreviewAuthor.Caption = "";
+		l_MapPreviewInfo.Caption = AuthorLine $ PlayersLine;
 }
 
 function bool MyOnDraw(canvas C)
 {
 	local float l,t,w,xl,yl;
+	local float ImgW, ImgH, ImgBottom;
 	// Reposition everything
+
+	// Keep the preview image at its true 512x256 (2:1) source aspect ratio.
+	// WinWidth (0.28, set in defaultproperties) is left alone; WinHeight is
+	// derived from the resulting actual pixel width every frame instead of
+	// being an independent fraction of the (wide, short) footer's height -
+	// that mismatch between the two axes is what was stretching the image.
+	ImgW = i_MapPreview.ActualWidth();
+	ImgH = ImgW * 0.5; // 256/512
+	i_MapPreview.WinHeight = ActualHeight(ImgH);
+	l_MapPreviewNone.WinHeight = i_MapPreview.WinHeight;
+
+	// Position the combined Author/Player-count label directly beneath the
+	// image, using whatever vertical room the (now correctly short) image
+	// leaves free.
+	ImgBottom = i_MapPreview.WinTop + i_MapPreview.WinHeight;
+	l_MapPreviewInfo.WinTop = ImgBottom + 0.02;
 
 	t = sb_Background.ActualTop() + sb_Background.ActualHeight() + 5;
 	l = sb_Background.ActualLeft() + sb_Background.ActualWidth() - sb_Background.ImageOffset[3];
@@ -98,7 +211,7 @@ function bool MyOnDraw(canvas C)
 	b_Accept.WinLeft = l;
 
 
-	ed_Chat.WinLeft   = sb_Background.ActualLeft() + sb_Background.ActualWidth() * 0.32;
+	ed_Chat.WinLeft   = sb_Background.ActualLeft() + sb_Background.ImageOffset[0];
 	ed_Chat.WinWidth  = L - ed_Chat.WinLeft;
 	ed_Chat.WinHeight = 25;
 	ed_Chat.WinTop    = t;
@@ -158,6 +271,7 @@ defaultproperties
 	strLiked="Liked the current map"
 	stdDisliked="Disliked the current map"
 	strMapAuthor="Author"
+	strPlayers="players"
 
 	Begin Object Class=AltSectionBackground Name=MapvoteFooterBackground
 		bFillClient=True
@@ -165,6 +279,8 @@ defaultproperties
 		bAltCaption=False
 		LeftPadding=0.010000
 		RightPadding=0.010000
+		WinLeft=0.32
+		WinWidth=0.66
 		WinHeight=0.81
 		bBoundToParent=True
 		bScaleToParent=True
@@ -179,8 +295,8 @@ defaultproperties
 		bVisibleWhenEmpty=True
 		OnCreateComponent=ChatScrollBox.InternalOnCreateComponent
 		StyleName="ServerBrowserGrid"
-		WinLeft=0.32
-		WinWidth=0.66
+		WinLeft=0.335
+		WinWidth=0.645
 		WinTop=0.02
 		WinHeight=0.76
 		TabOrder=2
@@ -219,19 +335,20 @@ defaultproperties
 	End Object
 	l_MapPreviewNone=MapPreviewNoneLabel
 
-	Begin Object Class=GUILabel Name=MapPreviewAuthorLabel
+	Begin Object Class=GUILabel Name=MapPreviewInfoLabel
 		Caption=""
 		TextAlign=TXTA_Center
 		TextColor=(B=255,G=255,R=255)
 		TextFont="UT2ServerListFont"
+		bMultiLine=True
 		WinLeft=0.02
 		WinTop=0.61
 		WinWidth=0.28
-		WinHeight=0.06
+		WinHeight=0.15
 		bBoundToParent=True
 		bScaleToParent=True
 	End Object
-	l_MapPreviewAuthor=MapPreviewAuthorLabel
+	l_MapPreviewInfo=MapPreviewInfoLabel
 
 	Begin Object Class=moEditBox Name=ChatEditbox
 		CaptionWidth=0.150000
