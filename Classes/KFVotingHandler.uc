@@ -29,6 +29,25 @@ struct FMapRepType
 };
 var array<FMapRepType> RepArray; // Map reputation array, should be in sync with MapList array.
 
+// Per-map preview override, read from KFMapVotePreviews.ini
+// (KFMapPreviewEntry) server-side in AddMap() below and sent to clients
+// one map at a time via the same ticked-RPC mechanism RepArray already
+// uses (see KFVotingReplicationInfo.TickedReplication_MapList/
+// ReceiveMapInfoRep) - never as one bulk-replicated array, so this isn't
+// exposed to the same size limit that GameConfigSec01-08 hit. Exists
+// because a client can only read its own local map cache/LevelSummary
+// for maps it has already downloaded - the server always has every
+// map's real ini entry locally, so this is resolved server-side once
+// and handed to every client regardless of their own map cache.
+struct FMapPreviewData
+{
+	var string TextureRef;
+	var string Author;
+	var int PlayerCountMin;
+	var int PlayerCountMax;
+};
+var array<FMapPreviewData> MapPreviewArray; // Preview override array, should be in sync with MapList array.
+
 // ------------------------------------------------------------------
 // Comparator for BuildGameConfig()'s sort pass: numbered entries
 // (SortOrder > 0) sort ascending by that number and always come before
@@ -530,6 +549,7 @@ function string SetupGameMap(MapVoteMapList MapInfo, int GameIndex, MapHistoryIn
 function AddMap(string MapName, string Mutators, string GameOptions) // called from the MapListLoader
 {
 	local MapHistoryInfo MapInfo;
+	local KFMapPreviewEntry PreviewEntry;
 	local bool bUpdate;
 	local int i;
 
@@ -545,6 +565,15 @@ function AddMap(string MapName, string Mutators, string GameOptions) // called f
 
 	RepArray.Length = MapCount + 1;
 	Class'MVMapRepHistory'.Static.GetMapHistoryRep(MapName,RepArray[MapCount].Positive,RepArray[MapCount].Negative);
+
+	// Resolved here (server-side, where KFMapVotePreviews.ini actually
+	// exists) rather than on each client - see FMapPreviewData above.
+	MapPreviewArray.Length = MapCount + 1;
+	PreviewEntry = new(none, MapName) class'KFMapPreviewEntry';
+	MapPreviewArray[MapCount].TextureRef = PreviewEntry.TextureRef;
+	MapPreviewArray[MapCount].Author = PreviewEntry.Author;
+	MapPreviewArray[MapCount].PlayerCountMin = PreviewEntry.PlayerCountMin;
+	MapPreviewArray[MapCount].PlayerCountMax = PreviewEntry.PlayerCountMax;
 
 	MapInfo = History.GetMapHistory(MapName);
 

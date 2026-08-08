@@ -87,25 +87,44 @@ final function int CurrentGameConfig()
 // Single-click handler inherited from XVoting.MapVotingPage, already wired
 // as OnClick for both lb_VoteCountListBox and lb_MapListBox in
 // MapVotingPage.InternalOnOpen(). Overridden here purely to also drive the
-// inline map preview panel (image + author) in the footer - preserves the
-// base selection/highlight behavior via Super first.
+// inline map preview panel (image + author + player count) in the footer -
+// preserves the base selection/highlight behavior via Super first.
 function bool MapListClick(GUIComponent Sender)
 {
 	local bool bResult;
 	local string MapName;
+	local int MapIndex;
+	local KFVotingHandler.FMapPreviewData PreviewOverride;
 
 	bResult = Super.MapListClick(Sender);
 
 	if( Sender == lb_VoteCountListBox.List )
-		MapName = MapVoteCountMultiColumnList(Sender).GetSelectedMapName();
+		MapIndex = MapVoteCountMultiColumnList(Sender).GetSelectedMapIndex();
 	else if( Sender == lb_MapListBox.List )
-		MapName = MapVoteMultiColumnList(Sender).GetSelectedMapName();
+		MapIndex = MapVoteMultiColumnList(Sender).GetSelectedMapIndex();
+	else
+		MapIndex = -1;
+
+	if( MapIndex > -1 && MapIndex < MVRI.MapList.Length )
+	{
+		MapName = MVRI.MapList[MapIndex].MapName;
+
+		// MVRI is declared as base VotingReplicationInfo in XVoting -
+		// MapPreviewList only exists on our KFVotingReplicationInfo
+		// subclass, so an explicit downcast is required (base-typed refs
+		// don't expose subclass-only members in this engine). Bounds-
+		// checked separately since MapPreviewList fills in one map at a
+		// time over several ticks and may briefly be shorter than
+		// MapList while that's still in progress.
+		if( MapIndex < KFVotingReplicationInfo(MVRI).MapPreviewList.Length )
+			PreviewOverride = KFVotingReplicationInfo(MVRI).MapPreviewList[MapIndex];
+	}
 
 	// f_Chat is declared as base MapVoteFooter in XVoting.VotingPage -
 	// UpdateMapPreview only exists on our KFMapVoteFooterX subclass, so an
 	// explicit downcast is required (base-typed refs don't expose
 	// subclass-only members in this engine).
-	KFMapVoteFooterX(f_Chat).UpdateMapPreview(MapName);
+	KFMapVoteFooterX(f_Chat).UpdateMapPreview(MapName, PreviewOverride);
 
 	return bResult;
 }

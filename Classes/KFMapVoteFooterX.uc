@@ -17,6 +17,7 @@ function InitComponent(GUIController InController, GUIComponent InOwner)
 {
 	local string str;
 	local ExtendedConsole C;
+	local KFVotingHandler.FMapPreviewData EmptyPreview;
 
 	Super(GUIFooter).InitComponent(InController, InOwner);
 
@@ -42,7 +43,7 @@ function InitComponent(GUIController InController, GUIComponent InOwner)
 
 	class'CacheManager'.static.GetMapList(CachedMaps);
 
-	UpdateMapPreview("");
+	UpdateMapPreview("", EmptyPreview);
 }
 
 final function int FindCachedMapIndex(string MapName)
@@ -57,11 +58,17 @@ final function int FindCachedMapIndex(string MapName)
 
 // Pulls Screenshot/Author/PlayerCount for MapName from three sources, in
 // order:
-//   1. KFMapVotePreviews.ini (KFMapPreviewEntry) - a bundled override
+//   1. PreviewOverride - resolved server-side from KFMapVotePreviews.ini
+//      (KFMapPreviewEntry) in KFVotingHandler.AddMap() and replicated to
+//      every client one map at a time (see KFVotingReplicationInfo -
+//      TickedReplication_MapList()/ReceiveMapInfoRep()/MapPreviewList),
 //      pointing into a shared texture package shipped with this mod
 //      (see KFMapPreviewEntry.uc). This is the only source guaranteed
 //      present on every client regardless of whether they've ever
-//      downloaded MapName's own map package.
+//      downloaded MapName's own map package - it can't be resolved
+//      locally here since PerObjectConfig/.ini reads only see whatever
+//      is on the machine actually running the code, and a client has no
+//      local copy of KFMapVotePreviews.ini at all.
 //   2. The native CacheManager map cache (CachedMaps) - built from
 //      whatever maps this specific client already has installed
 //      locally.
@@ -72,9 +79,8 @@ final function int FindCachedMapIndex(string MapName)
 // connecting client hasn't played before - confirmed via client log -
 // since KF1 only downloads a map's package when actually traveling to
 // it, never just for browsing the vote menu. Hence (1).
-function UpdateMapPreview(string MapName)
+function UpdateMapPreview(string MapName, KFVotingHandler.FMapPreviewData PreviewOverride)
 {
-	local KFMapPreviewEntry PreviewEntry;
 	local LevelSummary LS;
 	local Material Screenie;
 	local string AuthorLine, PlayersLine;
@@ -82,21 +88,18 @@ function UpdateMapPreview(string MapName)
 	local int MinPlayers, MaxPlayers, CacheIdx;
 	local bool bHavePlayerCount;
 
-	log("UpdateMapPreview: MapName='"$MapName$"'", 'MapPreviewST');
+	log("UpdateMapPreview: MapName='"$MapName$"' PreviewOverride.TextureRef='"$PreviewOverride.TextureRef$"'", 'MapPreviewST');
 
 	if (MapName != "")
 	{
-		PreviewEntry = new(none, MapName) class'KFMapPreviewEntry';
-		log("UpdateMapPreview: bundled override TextureRef='"$PreviewEntry.TextureRef$"'", 'MapPreviewST');
-
-		if (PreviewEntry.TextureRef != "")
+		if (PreviewOverride.TextureRef != "")
 		{
-			Screenie = Material(DynamicLoadObject(PreviewEntry.TextureRef, class'Material'));
-			log("UpdateMapPreview: bundled override DynamicLoadObject result Screenie="$Screenie, 'MapPreviewST');
+			Screenie = Material(DynamicLoadObject(PreviewOverride.TextureRef, class'Material'));
+			log("UpdateMapPreview: replicated override DynamicLoadObject result Screenie="$Screenie, 'MapPreviewST');
 
-			MapAuthor = PreviewEntry.Author;
-			MinPlayers = PreviewEntry.PlayerCountMin;
-			MaxPlayers = PreviewEntry.PlayerCountMax;
+			MapAuthor = PreviewOverride.Author;
+			MinPlayers = PreviewOverride.PlayerCountMin;
+			MaxPlayers = PreviewOverride.PlayerCountMax;
 			bHavePlayerCount = true;
 		}
 		else

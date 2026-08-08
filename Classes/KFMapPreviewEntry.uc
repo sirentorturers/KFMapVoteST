@@ -24,12 +24,24 @@
 //  this mod - same as KFAnnounc.uax already does - so it reaches every
 //  client regardless of their local map cache.
 //
+//  IMPORTANT: this class (and KFMapVotePreviews.ini) is only ever
+//  constructed SERVER-SIDE, in KFVotingHandler.AddMap(). Config/
+//  PerObjectConfig reads only see whatever ini exists on the machine
+//  actually running the code - a client has no local copy of this ini
+//  at all, so an earlier version that constructed this client-side in
+//  KFMapVoteFooterX always came back empty. The resolved data is instead
+//  read here once per map on the server and replicated to every client
+//  one map at a time (see KFVotingHandler.FMapPreviewData/
+//  MapPreviewArray and KFVotingReplicationInfo.MapPreviewList) - the
+//  same proven mechanism the map-rating data already uses, not a new
+//  bulk-replicated property.
+//
 //  Constructed directly by exact map name (new(none, MapName)) rather
-//  than discovered via GetPerObjectNames() - callers already know the
-//  map name they're looking up and just need to know whether a section
-//  for it exists, which an empty TextureRef after construction already
-//  tells them (PerObjectConfig falls back to defaultproperties - "" -
-//  when no matching section exists).
+//  than discovered via GetPerObjectNames() - the server already knows
+//  the map name it's looking up and just needs to know whether a
+//  section for it exists, which an empty TextureRef after construction
+//  already tells it (PerObjectConfig falls back to defaultproperties -
+//  "" - when no matching section exists).
 // ====================================================================
 class KFMapPreviewEntry extends Object
 	PerObjectConfig

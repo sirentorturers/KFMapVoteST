@@ -8,6 +8,14 @@ class KFVotingReplicationInfo extends VotingReplicationInfo
 
 var array<string> RepArray,SortedArray; // Displayed rep string
 
+// Client-side mirror of KFVotingHandler.MapPreviewArray, kept in sync
+// with MapList exactly like RepArray/SortedArray already are - filled in
+// by ReceiveMapInfoRep()/TickedReplication_MapList() below, never
+// declared in the replication{} block itself since it travels as an
+// extra parameter on the already-replicated ReceiveMapInfoRep call
+// rather than as its own bulk-replicated property.
+var array<KFVotingHandler.FMapPreviewData> MapPreviewList;
+
 var sound AnnounceSnds[13];
 var byte MapRepVote;
 var bool bClientHasInit;
@@ -81,20 +89,22 @@ function TickedReplication_MapList(int Index, bool bDedicated)
 
 	if( bDedicated )
 	{
-		ReceiveMapInfoRep(MapInfo,KFVotingHandler(VH).RepArray[Index]); // replicate one map each tick until all maps are replicated.
+		ReceiveMapInfoRep(MapInfo,KFVotingHandler(VH).RepArray[Index],KFVotingHandler(VH).MapPreviewArray[Index]); // replicate one map each tick until all maps are replicated.
 		bWaitingForReply = True;
 	}
 	else
 	{
 		MapList[MapList.Length] = MapInfo;
 		InitRepStr(MapList.Length-1,KFVotingHandler(VH).RepArray[Index]);
+		MapPreviewList[MapPreviewList.Length] = KFVotingHandler(VH).MapPreviewArray[Index];
 	}
 }
 
-simulated function ReceiveMapInfoRep( VotingHandler.MapVoteMapList MapInfo, KFVotingHandler.FMapRepType Rep )
+simulated function ReceiveMapInfoRep( VotingHandler.MapVoteMapList MapInfo, KFVotingHandler.FMapRepType Rep, KFVotingHandler.FMapPreviewData Preview )
 {
 	MapList[MapList.Length] = MapInfo;
 	InitRepStr(MapList.Length-1,Rep);
+	MapPreviewList[MapPreviewList.Length] = Preview;
 	ReplicationReply();
 }
 
