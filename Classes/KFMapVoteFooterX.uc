@@ -140,6 +140,8 @@ function UpdateMapPreview(string MapName, KFVotingHandler.FMapPreviewData Previe
 
 	log("UpdateMapPreview: final Screenie="$Screenie, 'MapPreviewST');
 
+	ApplyPreviewAnimRate(Texture(Screenie));
+
 	i_MapPreview.Image = Screenie;
 	i_MapPreview.SetVisibility(Screenie != None);
 	l_MapPreviewNone.SetVisibility(Screenie == None);
@@ -159,6 +161,58 @@ function UpdateMapPreview(string MapName, KFVotingHandler.FMapPreviewData Previe
 		l_MapPreviewInfo.Caption = AuthorLine $ "|" $ PlayersLine;
 	else
 		l_MapPreviewInfo.Caption = AuthorLine $ PlayersLine;
+}
+
+// Applies the server-configured animation speed (KFVotingHandler.
+// PreviewAnimFrameRate, replicated once via KFVotingReplicationInfo at
+// bNetInitial - see SetMapLike()/OnSendChat() above for the same
+// VoteReplicationInfo access pattern) to every frame of Tex's AnimNext
+// chain, if it has one. MinFrameRate/MaxFrameRate are plain scriptable
+// Texture fields (unlike Format, which is const - see
+// GenerateMapPreviewsCommandlet-handoff.md), so this edits the live,
+// in-memory Texture object on this client only - it never touches the
+// .utx asset on disk, which is exactly why this happens here at display
+// time instead of at import time. Cycle-guarded the same way
+// GenerateMapPreviewsCommandlet's own AnimNext walk is, since a looping
+// flipbook's last frame commonly points back to an earlier one.
+function ApplyPreviewAnimRate(Texture Tex)
+{
+	local float Rate;
+	local Texture Frame;
+	local array<Texture> Visited;
+	local KFVotingReplicationInfo RI;
+
+	if (Tex == None || Tex.AnimNext == None)
+		return;
+
+	if (PlayerOwner() != None)
+		RI = KFVotingReplicationInfo(PlayerOwner().VoteReplicationInfo);
+	if (RI != None && RI.PreviewAnimFrameRate > 0.0)
+		Rate = RI.PreviewAnimFrameRate;
+	else
+		Rate = 1.0; // defensive fallback - no configured/replicated rate yet
+
+	Frame = Tex;
+	while (Frame != None && Visited.Length < 64)
+	{
+		if (IsFrameVisited(Visited, Frame))
+			break;
+		Visited[Visited.Length] = Frame;
+		Frame.MinFrameRate = Rate;
+		Frame.MaxFrameRate = Rate;
+		Frame = Frame.AnimNext;
+	}
+}
+
+function bool IsFrameVisited(array<Texture> List, Texture Tex)
+{
+	local int i;
+
+	for (i = 0; i < List.Length; i++)
+		if (List[i] == Tex)
+			return true;
+
+	return false;
 }
 
 function bool MyOnDraw(canvas C)

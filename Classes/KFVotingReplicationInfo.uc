@@ -21,10 +21,18 @@ var byte MapRepVote;
 var bool bClientHasInit;
 var bool bShowMapLike;
 
+// Server-configured (KFMapVote.ini) preview-animation playback speed -
+// see KFVotingHandler.PreviewAnimFrameRate for the full rationale.
+// Replicated the same way bShowMapLike already is: a single scalar sent
+// once at bNetInitial, not a new replication statement or an array -
+// deliberately the lower-risk shape per this package's own crash
+// history with new replicated properties (see CLAUDE.md).
+var float PreviewAnimFrameRate;
+
 replication
 {
 	reliable if( Role==ROLE_Authority && bNetInitial )
-		bShowMapLike;
+		bShowMapLike, PreviewAnimFrameRate;
 	reliable if( Role==ROLE_Authority )
 		ReceiveMapInfoRep;
 	reliable if( Role<ROLE_Authority )

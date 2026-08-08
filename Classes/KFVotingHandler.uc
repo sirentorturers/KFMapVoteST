@@ -23,6 +23,21 @@ class KFVotingHandler extends xVotingHandler
 var config bool bShowMapLike;
 var config bool bSpectatorsCanVote;
 
+// Playback speed (frames/sec) for any animated preview texture shown in
+// the map vote footer's preview panel (see KFMapVoteFooterX.
+// UpdateMapPreview()) - admin-configurable in KFMapVote.ini rather than
+// baked into the imported texture asset itself, since there's no
+// scriptable way to persist an edited Texture property back into an
+// already-imported .utx package with this SDK's available ucc tooling
+// (BatchImportCommandlet has no per-file property override, and no
+// Commandlet-callable SavePackage-equivalent exists - see
+// GenerateMapPreviewsCommandlet-handoff.md). Applied client-side to the
+// live Texture object in UpdateMapPreview() instead, which needs no
+// package edits at all. Mirrors bShowMapLike's existing config -> spawn
+// -copy -> replicate pattern exactly (see AddMapVoteReplicationInfo()
+// below and KFVotingReplicationInfo.PreviewAnimFrameRate).
+var config float PreviewAnimFrameRate;
+
 struct FMapRepType
 {
 	var int Positive,Negative;
@@ -448,6 +463,7 @@ function AddMapVoteReplicationInfo(PlayerController Player)
 
 	M.PlayerID = Player.PlayerReplicationInfo.PlayerID;
 	M.bShowMapLike = bShowMapLike;
+	M.PreviewAnimFrameRate = PreviewAnimFrameRate;
 	MVRI[MVRI.Length] = M;
 }
 
@@ -951,4 +967,5 @@ defaultproperties
 	bMatchSetup=false
 	bShowMapLike=false
 	bSpectatorsCanVote=true
+	PreviewAnimFrameRate=1.0
 }

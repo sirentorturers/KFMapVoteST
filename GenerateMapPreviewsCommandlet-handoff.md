@@ -175,48 +175,144 @@ Still worth spot-checking if picked back up later:
   explicitly tested, though the `KFGameConfigEntry` pattern this mirrors
   is already proven in production for `KFMapVoteModes.ini`).
 
-## Texture pipeline design (Phases 2-3, not yet built)
+## Texture pipeline: confirmed findings (2026-08-08, real ucc testing)
 
-Deliberately **not written yet** - picked up 2026-08-08, paused here on
-purpose pending real `ucc` access (this dev environment has no
-`ucc.exe`/Wine, so none of this can be tested/iterated blind). Two open
-questions to resolve with real `ucc` output before writing Phase 2/3:
+Tested live against real `ucc` on the user's Windows/Wine box (this dev
+environment still has no `ucc.exe` itself - every finding below came from
+the user running a command and pasting/attaching `UCC.log`, not from
+guessing). Using `KF-Aperture` as the test map throughout
+(`kfportal_preview` -> `MaterialSequence` -> 3 slides).
 
-1. **`ucc batchexport`/`batchimport` exact syntax and behavior** - output
-   file naming convention, whether the trailing `Package.Group` filter
-   arg actually scopes to one object instead of exporting every `Texture`
-   in the whole map package, and whether animated `AnimNext` frames (each
-   a separate named `Texture` object per the manifest above) export as
-   separate files individually addressable by name. Plan: run one manual
-   `ucc batchexport <MapPackage> Texture pcx <dir>` against a single map
-   and inspect the real output before scripting this.
-2. **DXT1 compression.** Confirmed from source: `Texture.Format`
-   (`BitmapMaterial.uc`) is declared `const editconst` - **UnrealScript
-   cannot set it at runtime**, so our commandlet can never force DXT1
-   compression itself. Two candidate routes, in preference order:
-   - Pre-compress with ImageMagick (`magick`/`convert`, available in this
-     dev environment) into a real DXT1-compressed `.dds` (BC1 block
-     data - the same on-disk format UE's internal DXT1 Mips use) *before*
-     import, then see whether this SDK's `ucc batchimport`/UnrealEd
-     texture import recognizes `.dds` and imports it already-compressed
-     (native import code setting `Format`, not UnrealScript - this would
-     sidestep the `const` restriction entirely). Unverified whether this
-     specific KF1 SDK build's import path supports DDS at all.
-   - Fallback: import everything uncompressed via `batchimport`, then do
-     **one manual** "Compress All Textures" pass over the whole finished
-     `KFMapVoteST_Previews.utx` package in UnrealEd before shipping it -
-     simple, low-risk, a single one-time step regardless of map count.
-3. **Resize to \<=512x256.** ImageMagick handles this fine once frames are
-   exported (maintain aspect ratio, land on a power-of-two size like
-   512x256/256x256/512x128/etc. - UE2 textures expect power-of-two
-   dimensions). Not blocked on `ucc` access, just sequenced after export
-   since it operates on `ucc batchexport`'s output.
+**Export - `ucc batchexport` works, DDS is the format to use.**
+`ucc batchexport KF-Aperture Texture pcx exported` (run from `System/`)
+exports every `Texture` in the whole map package (not just the ones named
+in a `PREVIEWMANIFEST` line - a Phase 2 script needs to filter the output
+down to the wanted filenames) as `<Group>.<Name>.<ext>` flat files. PCX
+export **silently produces empty (0-byte) files** for any texture whose
+source is already DXT-compressed (which is nearly all of them) - only
+succeeded for the one uncompressed source texture in the test package.
+Re-running with `dds` as the export extension instead worked for
+everything: `ucc batchexport KF-Aperture Texture dds exported`. Manually
+parsed the resulting `.dds` headers (`identify`/ImageMagick can't read
+them - see below) and confirmed the actual screenshot textures
+(`kfportalpreview01/02/03`) come out already **512x256, DXT1, 10 mips** -
+already meeting spec, no resize/recompress needed for these at least. The
+other files `batchexport` swept up incidentally ranged up to 1024x1024 in
+DXT3/DXT5 - unrelated level-ambient textures, not preview images, to be
+filtered out.
 
-Once real `ucc batchexport` output from a single test map is available,
-the next step is writing the Phase 2 script (export -> resize/DXT1-prep -
-most likely a bash script per this project's existing Pi-automation
-convention of preferring shell scripts) and the Phase 3 `batchimport` +
-compression step.
+**ucc's DDS writer is non-spec-conformant.** Parsed the raw header bytes:
+`ddspf.dwSize` and `ddspf.dwFlags` are both left `0` instead of the
+required `32`/`DDPF_FOURCC`, even though the `DXT1`/`DXT3`/`DXT5` fourCC
+bytes themselves are present and correct at the right offset. This is why
+ImageMagick's `identify`/`dds:` coder rejects these files
+("improper image header") even though the pixel data is intact -
+patching those two fields would very likely fix that if ImageMagick ever
+needs to read one (not required for the working pipeline below, but
+worth remembering if DXT1 compression of an *oversized* texture is ever
+needed and ImageMagick has to decode/resize/re-encode a `.dds`).
+
+**Import - `ucc batchimport` does not exist in this SDK build**
+(`ucc batchimport ...` -> "Commandlet batchimport not found"). Nothing
+registered under that name in `Editor.int`'s `[Public]` section.
+`Editor.int` *does* register `PkgCommandlet`
+(`HelpUsage="pkg [import/export] [texture/sound] [packagename]
+[directory]"`), which looked promising but turned out to be dead/broken
+in this specific compiled build (Apr 2016) - every variant tried (DDS,
+PCX, flat files, nested group folders, `System/`-relative,
+repo-root-relative) produced the byte-identical failure
+(`ExecWarning: Missing filename`, no package ever written), regardless of
+source format or directory layout. **Do not spend more time on
+`PkgCommandlet` in this build.**
+
+**What actually works: `Editor.BatchImportCommandlet`, fully qualified.**
+Not listed in `Editor.int`'s `[Public]` section either (hence the
+`batchimport` short-name failure), but it's a real native class
+compiled into `Editor.dll`, callable by its fully-qualified name per
+`Commandlet.uc`'s own doc comment (unlisted commandlets still work via
+`ucc Package.ClassName`). Confirmed working syntax, run from `System/`:
+
+```
+ucc Editor.BatchImportCommandlet .\KFPreviewTest.utx Texture ..\exported_test\*.dds
+```
+
+Two things this needed to actually work, both confirmed the hard way:
+- The **package filename must include a path component** (`.\Name.utx`,
+  not a bare `Name.utx`) - a bare filename fails with
+  "Package should contain a path reference".
+- The **source directory must be given relative to the repo root**
+  (a sibling of `System/`), not relative to `System/` itself, even
+  though `ucc.exe` itself runs from `System/` - e.g. `..\exported_test`
+  worked, `exported_test` (meaning `System\exported_test`) did not.
+  (`PkgCommandlet`'s failures were *not* explained by this, in hindsight
+  - it failed identically regardless of directory location, per above.)
+
+Source doc:
+[BatchImportCommandlet](https://beyondunrealwiki.github.io/pages/batchimportcommandlet.html) -
+confirms `Texture` accepts PCX/BMP/TGA/DDS, and that imported objects use
+"the filename without extension as the object name."
+
+**Animated textures: automatic via filename convention, confirmed
+working.** Per
+[UnrealWiki: Animated Texture](https://beyondunrealwiki.github.io/pages/animated-texture.html),
+naming frame files `<BaseName>_a00.ext`, `<BaseName>_a01.ext`, etc. (the
+numbers don't need to start at 0) triggers automatic `Texture.AnimNext`
+chain-linking on import - and this **is not GUI-only**, it fired through
+`BatchImportCommandlet` too. Renamed the 3 `kfportalpreview*.dds` exports
+to `kfportalpreview_a01/02/03.dds` and re-ran the same
+`BatchImportCommandlet` invocation above; the user confirmed in the
+editor that `AnimNext` was already linked with zero manual setup.
+
+**DXT1 compression is still unresolved/untested** - `BatchImportCommandlet`
+imports with "default settings" per its own docs (no per-file property
+override, no `.props` companion file support - confirmed by re-checking
+the same doc page), so whether it preserves the DDS source's DXT1
+compression on import, or decompresses to something else, hasn't been
+checked yet. Next step when this is picked back up: inspect an imported
+texture's `Format` property in the editor (the user already has
+`KFPreviewTest.utx` open) and confirm it reads `TEXF_DXT1`, not something
+else.
+
+## Animation frame rate: solved without touching the asset at all
+
+First real in-editor test of the auto-linked `AnimNext` chain played
+back far too fast (flickering). `MinFrameRate`/`MaxFrameRate`
+(`Texture.uc`) are the relevant fields, and - unlike `Format` - they're
+plain `var(Animation) float`, **not** `const`. But the same packaging
+problem as DXT1 applies: no scriptable way to edit-then-resave an
+already-imported `.utx` with this SDK's tooling (no `Commandlet`-callable
+`SavePackage`, no `PkgCommandlet`, `BatchImportCommandlet` has no
+property overrides).
+
+The user's idea, which sidesteps the whole problem: make it a
+server-admin-configurable **runtime** setting instead of a baked-in
+asset property. `MinFrameRate`/`MaxFrameRate` are read live by the
+engine's texture-animation tick every frame, so a client can just set
+them on the loaded `Texture` object at display time - no package edit,
+no re-save, ever. Implemented 2026-08-08, mirroring `bShowMapLike`'s
+already-proven config -> spawn-copy -> replicate pattern exactly (a
+single scalar replicated once at `bNetInitial` - deliberately *not* the
+new-array-property shape that crashed the server previously, see
+CLAUDE.md):
+
+- `KFVotingHandler.PreviewAnimFrameRate` (`var config float`, default
+  `1.0`, documented in `Configs/KFMapVote.ini`) - admin sets this per
+  server.
+- Copied into each player's `KFVotingReplicationInfo` in
+  `AddMapVoteReplicationInfo()`, replicated once at `bNetInitial`
+  alongside `bShowMapLike` (same replication statement, one more
+  scalar - not a new statement, not an array).
+- `KFMapVoteFooterX.ApplyPreviewAnimRate()` - called from
+  `UpdateMapPreview()` right before the resolved `Screenie` is assigned
+  to `i_MapPreview.Image`. Walks the texture's `AnimNext` chain (cycle-
+  guarded the same way `GenerateMapPreviewsCommandlet`'s own walk is)
+  and sets `MinFrameRate`/`MaxFrameRate` on every frame from the
+  replicated value, falling back to `1.0` if `VoteReplicationInfo` isn't
+  available yet or the replicated value is `<= 0`.
+
+**Not yet compiled/tested** - written this session, needs `ucc make` +
+an in-game check that playback speed now tracks `KFMapVote.ini`'s
+`PreviewAnimFrameRate` value.
 
 ## Broader context (why this exists)
 
