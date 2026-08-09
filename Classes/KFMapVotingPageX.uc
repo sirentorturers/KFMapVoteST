@@ -722,7 +722,7 @@ DefaultProperties
 		WinLeft=0.02
 		WinWidth=0.96
 		WinTop=0.05
-		WinHeight=0.22
+		WinHeight=0.19
 		bVisibleWhenEmpty=true
 		bScaleToParent=True
 		bBoundToParent=True
@@ -738,7 +738,7 @@ DefaultProperties
 		TabOrder=1
 		WinLeft=0.02
 		WinWidth=0.32
-		WinTop=0.275
+		WinTop=0.245
 		WinHeight=0.0375
 		Caption="F4 Mode:"
 		CaptionWidth=0.28
@@ -753,7 +753,7 @@ DefaultProperties
 		TabOrder=2
 		WinLeft=0.35
 		WinWidth=0.20
-		WinTop=0.275
+		WinTop=0.245
 		WinHeight=0.0375
 		Caption="Diff:"
 		CaptionWidth=0.28
@@ -768,7 +768,7 @@ DefaultProperties
 		TabOrder=3
 		WinLeft=0.57
 		WinWidth=0.41
-		WinTop=0.275
+		WinTop=0.245
 		WinHeight=0.0375
 		Caption="F3 Search:"
 		CaptionWidth=0.32
@@ -782,18 +782,28 @@ DefaultProperties
 
 	// Occupies the row the search box used to sit alone on, now that
 	// search shares the row above with the mode/difficulty combos - see
-	// UpdateDescriptionLabel().
+	// UpdateDescriptionLabel(). TextFont deliberately isn't
+	// "UT2ServerListFont" despite the name match to MapListBox's
+	// StyleName="ServerBrowserGrid" - that style (ROSTY_ServerBrowserGrid,
+	// ROInterface/Classes) only overrides the style's Small font tier to
+	// UT2ServerListFont; MapListBox actually renders at FNS_Medium
+	// (MVMultiColumnList.MyFontScale, >=1000px vertical res), which the
+	// style leaves on GUIStyles' own inherited default for that tier:
+	// UT2MenuFont. GUILabel has no FontScale of its own (just a fixed
+	// named font), so UT2MenuFont is the closest actual match to what the
+	// map list below is visibly rendering.
 	Begin Object Class=GUILabel Name=DescriptionLabel
 		Caption=""
 		TextAlign=TXTA_Left
+		VertAlign=TXTA_Left
 		TextColor=(B=255,G=255,R=255)
-		TextFont="UT2ServerListFont"
+		TextFont="UT2MenuFont"
 		bTransparent=False
 		bMultiLine=True
 		WinLeft=0.02
 		WinWidth=0.96
-		WinTop=0.315
-		WinHeight=0.0375
+		WinTop=0.285
+		WinHeight=0.075
 		bScaleToParent=True
 		bBoundToParent=True
 	End Object
