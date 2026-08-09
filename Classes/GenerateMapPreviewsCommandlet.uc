@@ -42,20 +42,58 @@
 //  are left blank) since it must point into a shared texture package
 //  built separately (see KFMapPreviewEntry.uc). For every map still
 //  missing a TextureRef, this logs one PREVIEWMANIFEST line to the
-//  console - see ResolveScreenshotFrames() below for what it contains
-//  and why a map's raw Screenshot reference isn't always itself an
-//  exportable Texture. Reruns only show what's still outstanding.
+//  console (human-readable) AND writes one KFPreviewFrameEntry section
+//  per frame to KFMapVoteSTPreviewManifest.ini (machine-readable - the
+//  real input to the export/import automation script, see
+//  KFPreviewFrameEntry.uc and KFMapVoteST/Tools/) - see
+//  ResolveScreenshotFrames() below for what both contain and why a
+//  map's raw Screenshot reference isn't always itself an exportable
+//  Texture. Reruns only show what's still outstanding.
+//
+//  EXCLUDING A KNOWN-BAD MAP
+//  --------------------------
+//  Some maps' screenshot exports crash ucc's importer outright
+//  (confirmed: KF-Chthon-SE - a corrupted DDS export, not fixable from
+//  this side). List any such map, one per line, as
+//  ExcludedMaps=<MapName> in KFMapVoteSTPreviewExcludes.ini under
+//  [KFMapVoteST.GenerateMapPreviewsCommandlet] - a map on this list gets
+//  no KFPreviewFrameEntry sections written at all, so
+//  Tools/Export-PreviewTextures.bat never attempts to export/stage it in
+//  the first place. (Author/PlayerCount metadata is still written for
+//  an excluded map - only the texture/frame manifest is skipped, since
+//  that's the only part that can crash the export/import pipeline.) An
+//  EARLIER version of this exclude mechanism lived entirely in the
+//  batch script (KFMapVoteSTPreviewExcludes.txt + findstr /x) - moved
+//  here after that version silently failed to match on this project's
+//  actual Wine cmd.exe runtime (see
+//  GenerateMapPreviewsCommandlet-handoff.md for the failure history) -
+//  an ordinary UnrealScript string comparison against a config array
+//  (see IsMapExcluded() below - array.Find() isn't available in this
+//  SDK build) has no equivalent CR/LF or string-op risk.
+//
+//  If you change ExcludedMaps and want the removal to show up
+//  immediately (rather than just not getting any WORSE), delete
+//  KFMapVoteSTPreviewManifest.ini before rerunning this commandlet -
+//  PerObjectConfig/SaveConfig() merges new writes into an existing ini
+//  but never prunes a section this run didn't touch, so a
+//  newly-excluded map's old KFPreviewFrameEntry sections would otherwise
+//  just sit there unused (harmless, just wasted export time next run
+//  until the manifest is regenerated fresh).
 // ====================================================================
-class GenerateMapPreviewsCommandlet extends Commandlet;
+class GenerateMapPreviewsCommandlet extends Commandlet
+	Config(KFMapVoteSTPreviewExcludes);
+
+var config array<string> ExcludedMaps;
 
 event int Main(string Parms)
 {
 	local array<string> MapNames;
 	local LevelSummary Summary;
 	local KFMapPreviewEntry Entry;
-	local int i, j, WrittenCount, ChecklistCount, SkippedCount;
+	local KFPreviewFrameEntry FrameEntry;
+	local int i, j, WrittenCount, ChecklistCount, SkippedCount, ExcludedCount;
 	local array<Texture> Frames;
-	local string FrameList, Status;
+	local string FrameList, Status, FullRef, RelRef, MapPrefix;
 
 	MapNames = GetPerObjectNames("KFMapVoteSTMapList", "MapListEntry", 1024);
 	log("GenerateMapPreviews: found "$MapNames.Length$" maps listed in KFMapVoteSTMapList.ini (regenerate via generate_map_list.sh if this looks stale).");
@@ -92,6 +130,13 @@ event int Main(string Parms)
 
 		if (Entry.TextureRef == "" && Summary.Screenshot != None)
 		{
+			if (IsMapExcluded(MapNames[i]))
+			{
+				log("GenerateMapPreviews: SKIP "$MapNames[i]$" - listed in ExcludedMaps (KFMapVoteSTPreviewExcludes.ini), not added to the manifest.");
+				ExcludedCount++;
+				continue;
+			}
+
 			Frames.Length = 0;
 			ResolveScreenshotFrames(Summary.Screenshot, Frames, Status);
 
@@ -105,17 +150,47 @@ event int Main(string Parms)
 			if (Frames.Length > 1)
 				Status = Status $ "+ANIMATED("$Frames.Length$")";
 
-			// Pipe-delimited so an external script can split on "|"
-			// without worrying about ucc's console prefixing/spacing.
-			// FrameList is empty whenever Status isn't OK/OK+ - the raw
-			// src= ref is always included so a human can go look at the
-			// map manually for anything flagged PROCEDURAL/UNSUPPORTED.
+			// Pipe-delimited so a human can skim console/log output for
+			// PROCEDURAL/UNSUPPORTED entries needing manual attention -
+			// the raw src= ref is always included for that purpose. Not
+			// meant as a script's parse target though (ucc's own log
+			// wraps long lines mid-content, breaking naive line-based
+			// scraping); KFPreviewFrameEntry below is the real
+			// structured hand-off to the export/import automation.
 			log("PREVIEWMANIFEST|"$MapNames[i]$"|"$Status$"|"$FrameList$"|src="$string(Summary.Screenshot));
 			ChecklistCount++;
+
+			// One KFPreviewFrameEntry per frame, not one per map - see
+			// that class's own doc comment for why (cmd.exe on this
+			// project's actual runtime - Wine/CrossOver, not real
+			// Windows - turned out not to reliably support the string
+			// splitting/stripping a single semicolon-joined field would
+			// have needed). RelRef strips the "<MapName>." prefix here,
+			// in UnrealScript (Left()/Mid()/Len(), all proven reliable),
+			// rather than asking the batch script to do it.
+			if (Frames.Length > 0)
+			{
+				MapPrefix = MapNames[i] $ ".";
+				for (j = 0; j < Frames.Length; j++)
+				{
+					FullRef = string(Frames[j]);
+					if (Left(FullRef, Len(MapPrefix)) == MapPrefix)
+						RelRef = Mid(FullRef, Len(MapPrefix));
+					else
+						RelRef = FullRef; // shouldn't happen - ref didn't start with the expected map package prefix
+
+					FrameEntry = new(none, MapNames[i] $ "_" $ (j + 1)) class'KFPreviewFrameEntry';
+					FrameEntry.MapName = MapNames[i];
+					FrameEntry.FrameCount = Frames.Length;
+					FrameEntry.FrameIndex = j + 1;
+					FrameEntry.RelRef = RelRef;
+					FrameEntry.SaveConfig();
+				}
+			}
 		}
 	}
 
-	log("GenerateMapPreviews: wrote/updated "$WrittenCount$" entries in KFMapVotePreviews.ini; "$ChecklistCount$" still need a TextureRef (see PREVIEWMANIFEST lines above); "$SkippedCount$" map(s) failed to load entirely.");
+	log("GenerateMapPreviews: wrote/updated "$WrittenCount$" entries in KFMapVotePreviews.ini; "$ChecklistCount$" still need a TextureRef (see PREVIEWMANIFEST lines above); "$SkippedCount$" map(s) failed to load entirely; "$ExcludedCount$" map(s) skipped via ExcludedMaps.");
 
 	return 0;
 }
@@ -272,10 +347,25 @@ function bool IsTextureVisited(array<Texture> List, Texture Tex)
 	return false;
 }
 
+// Dynamic array .Find() isn't available in this SDK build (confirmed via
+// compile error - a later-UnrealScript-only feature this KF1 checkout
+// doesn't have) - plain linear scan instead, same pattern as
+// IsTextureVisited() above.
+function bool IsMapExcluded(string MapName)
+{
+	local int i;
+
+	for (i = 0; i < ExcludedMaps.Length; i++)
+		if (ExcludedMaps[i] == MapName)
+			return true;
+
+	return false;
+}
+
 defaultproperties
 {
 	HelpCmd="GenerateMapPreviews"
-	HelpOneLiner="Scaffolds KFMapVotePreviews.ini (Author/PlayerCount) and logs a PREVIEWMANIFEST checklist for the texture package."
+	HelpOneLiner="Scaffolds KFMapVotePreviews.ini (Author/PlayerCount) and writes KFMapVoteSTPreviewManifest.ini for the texture export/import pipeline."
 	HelpUsage="ucc GenerateMapPreviews"
 	LogToStdout=true
 }

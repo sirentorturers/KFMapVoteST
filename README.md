@@ -13,3 +13,5 @@ Resolved Bug 1: The use of a single array introduced a character limit of 4095. 
 Resolved Bug 2: After resolving the array issue, another bug was discovered in that the WebAdmin appears to have been limited in how much it could display under the game config sections, which led to the same exact crashes on map change unless the WebAdmin was disabled. Since I do use the WebAdmin but not for KFMapVote editing, I did not spend the time to research the issue, and opted to strip WebAdmin support out entirely for game config sections. Any self-respecting admin is editing the raw ini files anyways, so it felt unnecessary to waste any further time on this. 
 
 Future features planned: Separate difficulty drop down, map preview image with author, and game mode descriptions.
+
+Map preview images (screenshot, author, player count) shown in the map vote footer are built by a separate pipeline - see `PREVIEW_PIPELINE.md` for the full how-to.
