@@ -5,6 +5,7 @@ class KFMapVotingPageX extends ROMapVotingPage;
 
 var automated moEditBox SearchEdit;
 var automated moComboBox co_Difficulty;
+var automated GUILabel lbl_Description;
 var localized string strHelp;
 
 // Tracks the difficulty currently selected in co_Difficulty, so
@@ -62,6 +63,11 @@ function InternalOnOpen()
 			RebuildGameTypeList(CurrentDifficulty, DeriveModeGroup(MVRI.GameConfig[CurrentGameConfig()].GameName), CurrentGameConfig());
 		}
 	}
+
+	// Covers both branches above (filtered and not) - GameTypeChanged()
+	// keeps this in sync from here on for every subsequent mode/difficulty
+	// change.
+	UpdateDescriptionLabel(CurrentGameConfig());
 
 	if (f_Chat.ed_Chat.GetText() != "") {
 		f_Chat.ed_Chat.SetFocus(none);
@@ -179,6 +185,30 @@ function GameTypeChanged(GUIComponent Sender)
 {
 	super.GameTypeChanged(Sender);
 	SearchEdit.SetText("");
+	UpdateDescriptionLabel(CurrentGameConfig());
+}
+
+// Shows the selected mode's Description (KFMapVoteModes.ini,
+// KFGameConfigEntry.Description) in the panel that used to be occupied by
+// the map search box - see KFVotingHandler.GameConfigDescriptions /
+// KFVotingReplicationInfo.ReceiveGameConfigRep() for how this reaches the
+// client. Downcast to KFVotingReplicationInfo mirrors the same pattern
+// MapListClick() already uses for MapPreviewList - GameConfigDescriptions
+// only exists on our subclass, not the base VotingReplicationInfo type
+// MVRI is declared as.
+final function UpdateDescriptionLabel(int GameConfigIndex)
+{
+	local string Description;
+	local KFVotingReplicationInfo KFMVRI;
+
+	KFMVRI = KFVotingReplicationInfo(MVRI);
+	if( KFMVRI != none && GameConfigIndex > -1 && GameConfigIndex < KFMVRI.GameConfigDescriptions.Length )
+		Description = KFMVRI.GameConfigDescriptions[GameConfigIndex];
+
+	if( Description != "" )
+		lbl_Description.Caption = "Description: " $ Description;
+	else
+		lbl_Description.Caption = "";
 }
 
 function bool InternalOnKeyEvent(out byte Key, out byte State, float delta)
@@ -706,8 +736,8 @@ DefaultProperties
 
 	Begin Object class=moComboBox Name=GameTypeCombo
 		TabOrder=1
-		WinLeft=0.20
-		WinWidth=0.36
+		WinLeft=0.02
+		WinWidth=0.32
 		WinTop=0.275
 		WinHeight=0.0375
 		Caption="F4 Mode:"
@@ -721,8 +751,8 @@ DefaultProperties
 
 	Begin Object class=moComboBox Name=DifficultyCombo
 		TabOrder=2
-		WinLeft=0.58
-		WinWidth=0.22
+		WinLeft=0.35
+		WinWidth=0.20
 		WinTop=0.275
 		WinHeight=0.0375
 		Caption="Diff:"
@@ -736,12 +766,12 @@ DefaultProperties
 
 	Begin Object Class=moEditBox Name=SearchEditbox
 		TabOrder=3
-		WinLeft=0.20
-		WinWidth=0.60
-		WinTop=0.315
+		WinLeft=0.57
+		WinWidth=0.41
+		WinTop=0.275
 		WinHeight=0.0375
-		Caption="F3 Map Search:"
-		CaptionWidth=0.35
+		Caption="F3 Search:"
+		CaptionWidth=0.32
 		bScaleToParent=True
 		bBoundToParent=True
 		OnChange=OnSearchChange
@@ -749,6 +779,25 @@ DefaultProperties
 		OnKeyType=OnSearchKeyType
 	End Object
 	SearchEdit=SearchEditbox
+
+	// Occupies the row the search box used to sit alone on, now that
+	// search shares the row above with the mode/difficulty combos - see
+	// UpdateDescriptionLabel().
+	Begin Object Class=GUILabel Name=DescriptionLabel
+		Caption=""
+		TextAlign=TXTA_Left
+		TextColor=(B=255,G=255,R=255)
+		TextFont="UT2ServerListFont"
+		bTransparent=False
+		bMultiLine=True
+		WinLeft=0.02
+		WinWidth=0.96
+		WinTop=0.315
+		WinHeight=0.0375
+		bScaleToParent=True
+		bBoundToParent=True
+	End Object
+	lbl_Description=DescriptionLabel
 
 	Begin Object Class=MVMultiColumnListBox Name=MapListBox
 		TabOrder=4

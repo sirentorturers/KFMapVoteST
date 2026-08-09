@@ -16,6 +16,15 @@ var array<string> RepArray,SortedArray; // Displayed rep string
 // rather than as its own bulk-replicated property.
 var array<KFVotingHandler.FMapPreviewData> MapPreviewList;
 
+// Client-side mirror of KFVotingHandler.GameConfigDescriptions, index-
+// matched with the inherited GameConfig array exactly like MapPreviewList
+// is matched with MapList above - filled in by the overridden
+// TickedReplication_GameConfig()/ReceiveGameConfigRep() below, never
+// declared in the replication{} block itself for the same reason
+// MapPreviewList isn't (see KFVotingHandler.GameConfigDescriptions and
+// CLAUDE.md's replication gotchas).
+var array<string> GameConfigDescriptions;
+
 var sound AnnounceSnds[13];
 var byte MapRepVote;
 var bool bClientHasInit;
@@ -34,7 +43,7 @@ replication
 	reliable if( Role==ROLE_Authority && bNetInitial )
 		bShowMapLike, PreviewAnimFrameRate;
 	reliable if( Role==ROLE_Authority )
-		ReceiveMapInfoRep;
+		ReceiveMapInfoRep, ReceiveGameConfigRep;
 	reliable if( Role<ROLE_Authority )
 		SendMapRepVote;
 }
@@ -88,6 +97,34 @@ simulated function OpenWindow()
 		}
 	}
 }
+// Overrides the base xVoting.VotingReplicationInfo version entirely
+// (same approach as TickedReplication_MapList below) so the per-mode
+// Description text can ride along with the existing GameConfig entry
+// instead of arriving as a separate RPC - mirrors ReceiveMapInfoRep
+// widening the base map RPC's parameter list rather than adding a new
+// bulk-replicated property. Not simulated, matching the base signature -
+// this only ever runs server-side (see VotingReplicationInfo.Tick()).
+function TickedReplication_GameConfig(int Index, bool bDedicated)
+{
+	local VotingHandler.MapVoteGameConfigLite GameConfigItem;
+	local string Description;
+
+	GameConfigItem = VH.GetGameConfig(Index);
+	Description = KFVotingHandler(VH).GetGameConfigDescription(Index);
+	DebugLog("___Sending " $ Index $ " - " $ GameConfigItem.GameName);
+
+	if( bDedicated )
+	{
+		ReceiveGameConfigRep(GameConfigItem, Description); // replicate one GameConfig entry each tick.
+		bWaitingForReply = True;
+	}
+	else
+	{
+		GameConfig[GameConfig.Length] = GameConfigItem;
+		GameConfigDescriptions[GameConfigDescriptions.Length] = Description;
+	}
+}
+
 function TickedReplication_MapList(int Index, bool bDedicated)
 {
  	local VotingHandler.MapVoteMapList MapInfo;
@@ -113,6 +150,17 @@ simulated function ReceiveMapInfoRep( VotingHandler.MapVoteMapList MapInfo, KFVo
 	MapList[MapList.Length] = MapInfo;
 	InitRepStr(MapList.Length-1,Rep);
 	MapPreviewList[MapPreviewList.Length] = Preview;
+	ReplicationReply();
+}
+
+// Client-side receiver for TickedReplication_GameConfig()'s widened send
+// above - stores into GameConfig exactly like the base engine's own
+// ReceiveGameConfig() would, plus the extra Description text into
+// GameConfigDescriptions at the same (matching) index.
+simulated function ReceiveGameConfigRep( VotingHandler.MapVoteGameConfigLite p_GameConfig, string Description )
+{
+	GameConfig[GameConfig.Length] = p_GameConfig;
+	GameConfigDescriptions[GameConfigDescriptions.Length] = Description;
 	ReplicationReply();
 }
 

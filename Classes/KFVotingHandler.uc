@@ -63,6 +63,16 @@ struct FMapPreviewData
 };
 var array<FMapPreviewData> MapPreviewArray; // Preview override array, should be in sync with MapList array.
 
+// Per-mode description text, read from KFGameConfigEntry.Description
+// (KFMapVoteModes.ini) in BuildGameConfig() below - index-matched with
+// GameConfig, same convention as MapPreviewArray/MapList above. Kept as a
+// plain parallel array rather than a field on GameConfig itself because
+// GameConfig's element type (MapVoteGameConfig/MapVoteGameConfigLite) is
+// a base-engine struct we don't own and can't widen. Delivered to clients
+// one entry at a time via KFVotingReplicationInfo.ReceiveGameConfigRep()
+// - see that class for why (mirrors MapPreviewList's own reasoning).
+var array<string> GameConfigDescriptions;
+
 // ------------------------------------------------------------------
 // Comparator for BuildGameConfig()'s sort pass: numbered entries
 // (SortOrder > 0) sort ascending by that number and always come before
@@ -144,6 +154,7 @@ final function BuildGameConfig()
 	}
 
 	GameConfig.Length = Entries.Length;
+	GameConfigDescriptions.Length = Entries.Length;
 	for( i=0; i<Entries.Length; i++ )
 	{
 		GameConfig[i].GameClass = Entries[i].GameClass;
@@ -152,9 +163,19 @@ final function BuildGameConfig()
 		GameConfig[i].GameName  = Entries[i].GameName;
 		GameConfig[i].Mutators  = Entries[i].Mutators;
 		GameConfig[i].Options   = Entries[i].Options;
+		GameConfigDescriptions[i] = Entries[i].Description;
 	}
 
 	log("___BuildGameConfig: assembled "$GameConfig.Length$" GameConfig entries from KFMapVoteModes.ini.",'MapVote');
+}
+
+// Index-bounds-checked accessor for KFVotingReplicationInfo's overridden
+// TickedReplication_GameConfig() - see GameConfigDescriptions above.
+final function string GetGameConfigDescription(int Index)
+{
+	if( Index < 0 || Index >= GameConfigDescriptions.Length )
+		return "";
+	return GameConfigDescriptions[Index];
 }
 
 // ------------------------------------------------------------------

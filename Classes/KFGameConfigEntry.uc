@@ -35,6 +35,16 @@ var config string GameName;
 var config string Mutators;
 var config string Options;
 
+// Optional flavor text shown in the map vote GUI's description panel when
+// this mode is selected (see KFMapVotingPageX.UpdateDescriptionLabel()).
+// Blank is fine - the panel just stays empty for that mode. Not part of
+// the base engine's MapVoteGameConfigLite struct, so it can't ride along
+// with GameConfig's existing replication - see KFVotingHandler.
+// GameConfigDescriptions / KFVotingReplicationInfo.ReceiveGameConfigRep()
+// for how it actually reaches the client (same per-item RPC pattern
+// already proven safe for MapPreviewList).
+var config string Description;
+
 // Optional explicit ordering. Sections are read back via
 // GetPerObjectNames() in whatever order the engine returns them
 // (typically file order, but not guaranteed) - if you need the vote list
