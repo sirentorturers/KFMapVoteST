@@ -53,7 +53,22 @@ var config string Description;
 // Leave at the default (0) on every entry to just take file order as-is.
 var config int SortOrder;
 
+// Per-mode map list restriction. "All" (default) offers every map that
+// already matches Prefix, same as before this field existed. "Allow"
+// restricts this mode to only the maps listed in AllowMap. "Exclude"
+// offers every Prefix-matching map except the ones listed in ExcludeMap.
+// AllowMap/ExcludeMap are only read when MapListStyle selects them - like
+// Description, this isn't part of the base engine's MapVoteGameConfigLite
+// struct, so it can't ride along with GameConfig's existing replication -
+// see KFVotingHandler.GameConfigMapListStyle/GameConfigMapListValue and
+// KFVotingReplicationInfo.ReceiveGameConfigRep() for how it reaches the
+// client (same per-item RPC pattern already proven safe for Description).
+var config string MapListStyle;
+var config array<string> AllowMap;
+var config array<string> ExcludeMap;
+
 defaultproperties
 {
 	SortOrder=0
+	MapListStyle="All"
 }

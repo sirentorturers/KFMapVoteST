@@ -30,18 +30,41 @@ function ScaleToResolution(int ResX, int ResY)
 	}
 }
 
+// Manual linear scan against a comma-split Allow/Exclude list - dynamic
+// array .Find() isn't available in this SDK (confirmed elsewhere in this
+// package, e.g. GenerateMapPreviewsCommandlet.IsMapExcluded()).
+function bool IsMapInList(string MapName, array<string> List)
+{
+	local int i;
+
+	for( i=0; i<List.Length; i++ )
+		if( List[i] ~= MapName )
+			return true;
+	return false;
+}
+
 function LoadList(VotingReplicationInfo LoadVRI, int GameTypeIndex)
 {
 	local int m,p,l;
-	local array<string> PrefixList,SkipList;
-	local string A,B,MP;
+	local array<string> PrefixList,SkipList,ModeMapList;
+	local string A,B,MP,MapListStyle;
+	local KFVotingReplicationInfo KFVRI;
 
 	VRI = LoadVRI;
+	KFVRI = KFVotingReplicationInfo(VRI); // base VotingReplicationInfo doesn't expose the MapListStyle/Value mirrors below
 
 	A = VRI.GameConfig[GameTypeIndex].Prefix;
 	if( Divide(A,"|",A,B) )
 		Split(B, ",", SkipList);
 	Split(A, ",", PrefixList);
+
+	MapListStyle = "All";
+	if( KFVRI != none && GameTypeIndex < KFVRI.GameConfigMapListStyle.Length )
+	{
+		MapListStyle = KFVRI.GameConfigMapListStyle[GameTypeIndex];
+		if( MapListStyle != "All" && GameTypeIndex < KFVRI.GameConfigMapListValue.Length )
+			Split(KFVRI.GameConfigMapListValue[GameTypeIndex], ",", ModeMapList);
+	}
 
 	for( m=0; m<VRI.MapList.Length; m++)
 	{
@@ -55,6 +78,15 @@ function LoadList(VotingReplicationInfo LoadVRI, int GameTypeIndex)
 						break;
 				if( l!=-1 )
 					continue;
+
+				if( MapListStyle != "All" )
+				{
+					if( MapListStyle ~= "Allow" && !IsMapInList(MP, ModeMapList) )
+						continue;
+					if( MapListStyle ~= "Exclude" && IsMapInList(MP, ModeMapList) )
+						continue;
+				}
+
 				l = UnfilteredData.Length;
 				UnfilteredData.Insert(l,1);
 				UnfilteredData[l] = m;

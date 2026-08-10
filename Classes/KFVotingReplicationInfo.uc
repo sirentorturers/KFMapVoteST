@@ -25,6 +25,16 @@ var array<KFVotingHandler.FMapPreviewData> MapPreviewList;
 // CLAUDE.md's replication gotchas).
 var array<string> GameConfigDescriptions;
 
+// Client-side mirror of KFVotingHandler.GameConfigMapListStyle/
+// GameConfigMapListValue, index-matched with GameConfig the same way
+// GameConfigDescriptions is above - filled in by the same overridden
+// TickedReplication_GameConfig()/ReceiveGameConfigRep() below (its RPC
+// parameter list is widened further rather than adding a new
+// bulk-replicated property, for the same reason GameConfigDescriptions
+// isn't declared in the replication{} block itself).
+var array<string> GameConfigMapListStyle;
+var array<string> GameConfigMapListValue;
+
 var sound AnnounceSnds[13];
 var byte MapRepVote;
 var bool bClientHasInit;
@@ -107,21 +117,25 @@ simulated function OpenWindow()
 function TickedReplication_GameConfig(int Index, bool bDedicated)
 {
 	local VotingHandler.MapVoteGameConfigLite GameConfigItem;
-	local string Description;
+	local string Description,MapListStyle,MapListValue;
 
 	GameConfigItem = VH.GetGameConfig(Index);
 	Description = KFVotingHandler(VH).GetGameConfigDescription(Index);
+	MapListStyle = KFVotingHandler(VH).GetGameConfigMapListStyle(Index);
+	MapListValue = KFVotingHandler(VH).GetGameConfigMapListValue(Index);
 	DebugLog("___Sending " $ Index $ " - " $ GameConfigItem.GameName);
 
 	if( bDedicated )
 	{
-		ReceiveGameConfigRep(GameConfigItem, Description); // replicate one GameConfig entry each tick.
+		ReceiveGameConfigRep(GameConfigItem, Description, MapListStyle, MapListValue); // replicate one GameConfig entry each tick.
 		bWaitingForReply = True;
 	}
 	else
 	{
 		GameConfig[GameConfig.Length] = GameConfigItem;
 		GameConfigDescriptions[GameConfigDescriptions.Length] = Description;
+		GameConfigMapListStyle[GameConfigMapListStyle.Length] = MapListStyle;
+		GameConfigMapListValue[GameConfigMapListValue.Length] = MapListValue;
 	}
 }
 
@@ -157,10 +171,12 @@ simulated function ReceiveMapInfoRep( VotingHandler.MapVoteMapList MapInfo, KFVo
 // above - stores into GameConfig exactly like the base engine's own
 // ReceiveGameConfig() would, plus the extra Description text into
 // GameConfigDescriptions at the same (matching) index.
-simulated function ReceiveGameConfigRep( VotingHandler.MapVoteGameConfigLite p_GameConfig, string Description )
+simulated function ReceiveGameConfigRep( VotingHandler.MapVoteGameConfigLite p_GameConfig, string Description, string MapListStyle, string MapListValue )
 {
 	GameConfig[GameConfig.Length] = p_GameConfig;
 	GameConfigDescriptions[GameConfigDescriptions.Length] = Description;
+	GameConfigMapListStyle[GameConfigMapListStyle.Length] = MapListStyle;
+	GameConfigMapListValue[GameConfigMapListValue.Length] = MapListValue;
 	ReplicationReply();
 }
 

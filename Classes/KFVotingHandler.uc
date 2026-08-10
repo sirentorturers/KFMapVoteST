@@ -73,6 +73,18 @@ var array<FMapPreviewData> MapPreviewArray; // Preview override array, should be
 // - see that class for why (mirrors MapPreviewList's own reasoning).
 var array<string> GameConfigDescriptions;
 
+// Per-mode map list restriction, read from KFGameConfigEntry.MapListStyle/
+// AllowMap/ExcludeMap - same index-matched-parallel-array convention as
+// GameConfigDescriptions above, for the same reason (GameConfig's element
+// type is a base-engine struct we can't widen). GameConfigMapListStyle is
+// always "All"/"Allow"/"Exclude"; GameConfigMapListValue is a single
+// comma-joined string holding whichever of AllowMap/ExcludeMap is active
+// for that mode (same comma-list convention Prefix already uses) - built
+// by JoinMapList() below. Delivered to clients the same way
+// GameConfigDescriptions is - see KFVotingReplicationInfo.
+var array<string> GameConfigMapListStyle;
+var array<string> GameConfigMapListValue;
+
 // ------------------------------------------------------------------
 // Comparator for BuildGameConfig()'s sort pass: numbered entries
 // (SortOrder > 0) sort ascending by that number and always come before
@@ -155,6 +167,8 @@ final function BuildGameConfig()
 
 	GameConfig.Length = Entries.Length;
 	GameConfigDescriptions.Length = Entries.Length;
+	GameConfigMapListStyle.Length = Entries.Length;
+	GameConfigMapListValue.Length = Entries.Length;
 	for( i=0; i<Entries.Length; i++ )
 	{
 		GameConfig[i].GameClass = Entries[i].GameClass;
@@ -164,9 +178,42 @@ final function BuildGameConfig()
 		GameConfig[i].Mutators  = Entries[i].Mutators;
 		GameConfig[i].Options   = Entries[i].Options;
 		GameConfigDescriptions[i] = Entries[i].Description;
+
+		if( Entries[i].MapListStyle ~= "Allow" )
+		{
+			GameConfigMapListStyle[i] = "Allow";
+			GameConfigMapListValue[i] = JoinMapList(Entries[i].AllowMap);
+		}
+		else if( Entries[i].MapListStyle ~= "Exclude" )
+		{
+			GameConfigMapListStyle[i] = "Exclude";
+			GameConfigMapListValue[i] = JoinMapList(Entries[i].ExcludeMap);
+		}
+		else
+		{
+			GameConfigMapListStyle[i] = "All";
+			GameConfigMapListValue[i] = "";
+		}
 	}
 
 	log("___BuildGameConfig: assembled "$GameConfig.Length$" GameConfig entries from KFMapVoteModes.ini.",'MapVote');
+}
+
+// Manual comma-join - no built-in Join() exists in this SDK (the inverse
+// of Split(), which is used throughout this package). Mirrors the
+// comma-list convention Prefix's skip-list already uses on the read side.
+final function string JoinMapList(array<string> Arr)
+{
+	local int i;
+	local string Result;
+
+	for( i=0; i<Arr.Length; i++ )
+	{
+		if( i>0 )
+			Result = Result $ ",";
+		Result = Result $ Arr[i];
+	}
+	return Result;
 }
 
 // Index-bounds-checked accessor for KFVotingReplicationInfo's overridden
@@ -176,6 +223,23 @@ final function string GetGameConfigDescription(int Index)
 	if( Index < 0 || Index >= GameConfigDescriptions.Length )
 		return "";
 	return GameConfigDescriptions[Index];
+}
+
+// Index-bounds-checked accessors for the map-list-restriction parallel
+// arrays above - same convention as GetGameConfigDescription(). Default to
+// "All"/"" out of bounds so a not-yet-populated or malformed index just
+// behaves as "no restriction" rather than accidentally excluding everything.
+final function string GetGameConfigMapListStyle(int Index)
+{
+	if( Index < 0 || Index >= GameConfigMapListStyle.Length )
+		return "All";
+	return GameConfigMapListStyle[Index];
+}
+final function string GetGameConfigMapListValue(int Index)
+{
+	if( Index < 0 || Index >= GameConfigMapListValue.Length )
+		return "";
+	return GameConfigMapListValue[Index];
 }
 
 // ------------------------------------------------------------------
@@ -720,16 +784,31 @@ function PlayerExit(Controller Exiting)
 
 function bool IsValidVote(int MapIndex, int GameIndex)
 {
-	local string A,B;
-	local array<string> PL;
-	local int i;
+	return IsMapValidForGameConfig(MapIndex, GameIndex);
+}
 
-	A = GameConfig[GameIndex].Prefix;
+// Server-side authority check: does MapList[MapListIdx] belong to
+// GameConfig[GCIdx]'s map list? Combines the original Prefix/skip-list
+// match (unchanged from before this field existed) with the new
+// MapListStyle Allow/Exclude restriction, so a modified client can't
+// submit a vote for a map the mode disallows even if the client-side GUI
+// filtering in MVMultiColumnList.LoadList() is bypassed - same
+// defense-in-depth already relied on for Prefix.
+final function bool IsMapValidForGameConfig(int MapListIdx, int GCIdx)
+{
+	local string A,B,MapListStyle,MapName;
+	local array<string> PL,ModeMapList;
+	local int i;
+	local bool bInList;
+
+	MapName = MapList[MapListIdx].MapName;
+
+	A = GameConfig[GCIdx].Prefix;
 	Divide(A,"|",A,B);
 	Split(A, ",", PL);
 
 	for( i=(PL.Length-1); i>=0; --i )
-		if( Left(MapList[MapIndex].MapName, len(PL[i]))~=PL[i] )
+		if( Left(MapName, len(PL[i]))~=PL[i] )
 			break;
 	if( i==-1 )
 		return false;
@@ -738,9 +817,27 @@ function bool IsValidVote(int MapIndex, int GameIndex)
 	{
 		Split(B, ",", PL);
 		for( i=(PL.Length-1); i>=0; --i )
-			if( Left(MapList[MapIndex].MapName, len(PL[i]))~=PL[i] )
+			if( Left(MapName, len(PL[i]))~=PL[i] )
 				return false;
 	}
+
+	MapListStyle = GetGameConfigMapListStyle(GCIdx);
+	if( MapListStyle != "All" )
+	{
+		Split(GetGameConfigMapListValue(GCIdx), ",", ModeMapList);
+		bInList = false;
+		for( i=(ModeMapList.Length-1); i>=0; --i )
+		{
+			if( ModeMapList[i] ~= MapName )
+			{
+				bInList = true;
+				break;
+			}
+		}
+		if( (MapListStyle ~= "Allow" && !bInList) || (MapListStyle ~= "Exclude" && bInList) )
+			return false;
+	}
+
 	return true;
 }
 function GetDefaultMap(out int mapidx, out int gameidx)
