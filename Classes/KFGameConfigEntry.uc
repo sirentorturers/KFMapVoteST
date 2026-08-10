@@ -57,15 +57,26 @@ var config int SortOrder;
 // already matches Prefix, same as before this field existed. "Allow"
 // restricts this mode to only the maps listed in AllowMap. "Exclude"
 // offers every Prefix-matching map except the ones listed in ExcludeMap.
-// AllowMap/ExcludeMap are only read when MapListStyle selects them - like
-// Description, this isn't part of the base engine's MapVoteGameConfigLite
-// struct, so it can't ride along with GameConfig's existing replication -
-// see KFVotingHandler.GameConfigMapListStyle/GameConfigMapListValue and
-// KFVotingReplicationInfo.ReceiveGameConfigRep() for how it reaches the
-// client (same per-item RPC pattern already proven safe for Description).
+// "Copy" mirrors another mode's MapListStyle/AllowMap/ExcludeMap instead
+// of duplicating them here - set CopyMapList to the target mode's section
+// ID (the permanent instance ID described at the top of this file, e.g.
+// "00_Standard_Hard" - NOT its GameName), useful for keeping every
+// difficulty tier of the same mode in sync without hand-copying the list
+// to each one. Resolved once, server-side, in KFVotingHandler.
+// BuildGameConfig() (see ResolveMapList()) - copying a mode that itself
+// uses Copy is followed transitively; a cycle or a missing/misspelled
+// target ID falls back to "All" rather than failing.
+// AllowMap/ExcludeMap/CopyMapList are only read when MapListStyle selects
+// them - like Description, none of this is part of the base engine's
+// MapVoteGameConfigLite struct, so it can't ride along with GameConfig's
+// existing replication - see KFVotingHandler.GameConfigMapListStyle/
+// GameConfigMapListValue and KFVotingReplicationInfo.ReceiveGameConfigRep()
+// for how the resolved result reaches the client (same per-item RPC
+// pattern already proven safe for Description).
 var config string MapListStyle;
 var config array<string> AllowMap;
 var config array<string> ExcludeMap;
+var config string CopyMapList;
 
 defaultproperties
 {

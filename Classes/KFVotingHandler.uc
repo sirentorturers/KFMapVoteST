@@ -118,6 +118,7 @@ final function BuildGameConfig()
 	local array<KFGameConfigEntry> Entries;
 	local KFGameConfigEntry Entry;
 	local int i, j, BestIdx;
+	local string ResolvedStyle, ResolvedValue;
 
 	GameConfig.Length = 0;
 
@@ -179,24 +180,69 @@ final function BuildGameConfig()
 		GameConfig[i].Options   = Entries[i].Options;
 		GameConfigDescriptions[i] = Entries[i].Description;
 
-		if( Entries[i].MapListStyle ~= "Allow" )
-		{
-			GameConfigMapListStyle[i] = "Allow";
-			GameConfigMapListValue[i] = JoinMapList(Entries[i].AllowMap);
-		}
-		else if( Entries[i].MapListStyle ~= "Exclude" )
-		{
-			GameConfigMapListStyle[i] = "Exclude";
-			GameConfigMapListValue[i] = JoinMapList(Entries[i].ExcludeMap);
-		}
-		else
-		{
-			GameConfigMapListStyle[i] = "All";
-			GameConfigMapListValue[i] = "";
-		}
+		ResolveMapList(Entries, Entries[i], ResolvedStyle, ResolvedValue);
+		GameConfigMapListStyle[i] = ResolvedStyle;
+		GameConfigMapListValue[i] = ResolvedValue;
 	}
 
 	log("___BuildGameConfig: assembled "$GameConfig.Length$" GameConfig entries from KFMapVoteModes.ini.",'MapVote');
+}
+
+// Linear scan for the KFGameConfigEntry whose permanent section/instance
+// ID (its object Name - see the class comment at the top of
+// KFGameConfigEntry.uc) matches ID. Used to resolve MapListStyle="Copy"/
+// CopyMapList below. array.Find() isn't available in this SDK, same as
+// every other lookup in this package.
+final function KFGameConfigEntry FindEntryByID(array<KFGameConfigEntry> Entries, string ID)
+{
+	local int i;
+
+	for( i=0; i<Entries.Length; i++ )
+		if( string(Entries[i].Name) ~= ID )
+			return Entries[i];
+	return none;
+}
+
+// Resolves Entry's effective MapListStyle/map list, following a
+// MapListStyle="Copy" chain to whichever mode CopyMapList ultimately
+// points at (transitively, if that mode is itself a Copy). The loop is
+// capped at Entries.Length hops, so a cycle (A copies B copies A) or a
+// dangling/misspelled CopyMapList just falls through to the "All"/""
+// default below instead of hanging or crashing.
+final function ResolveMapList(array<KFGameConfigEntry> Entries, KFGameConfigEntry Entry, out string OutStyle, out string OutValue)
+{
+	local KFGameConfigEntry Current;
+	local int Depth;
+
+	Current = Entry;
+	for( Depth=0; Depth<Entries.Length; Depth++ )
+	{
+		if( !(Current.MapListStyle ~= "Copy") )
+			break;
+		Current = FindEntryByID(Entries, Current.CopyMapList);
+		if( Current == none )
+		{
+			OutStyle = "All";
+			OutValue = "";
+			return;
+		}
+	}
+
+	if( Current.MapListStyle ~= "Allow" )
+	{
+		OutStyle = "Allow";
+		OutValue = JoinMapList(Current.AllowMap);
+	}
+	else if( Current.MapListStyle ~= "Exclude" )
+	{
+		OutStyle = "Exclude";
+		OutValue = JoinMapList(Current.ExcludeMap);
+	}
+	else
+	{
+		OutStyle = "All";
+		OutValue = "";
+	}
 }
 
 // Manual comma-join - no built-in Join() exists in this SDK (the inverse
