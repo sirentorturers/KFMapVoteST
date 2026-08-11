@@ -5,6 +5,11 @@ class MVCountColumnList extends MapVoteCountMultiColumnList;
 
 var eFontScale MyFontScale;  // soomebody is messing up with the self.FontScale
 
+// Must match KFVotingHandler.RANDOM_MAP_NAME exactly (server-side source of
+// truth) - duplicated here (and in MVMultiColumnList.uc) since no shared
+// base class conveniently spans client and server.
+const RANDOM_MAP_NAME = "RANDOM MAP";
+
 
 function InitComponent(GUIController MyController, GUIComponent MyOwner)
 {
@@ -40,6 +45,7 @@ function DrawItem(Canvas Canvas, int i, float X, float Y, float W, float H, bool
 {
 	local float CellLeft, CellWidth;
 	local GUIStyles DrawStyle;
+	local string MapName;
 
 	if( VRI == none )
 		return;
@@ -56,9 +62,18 @@ function DrawItem(Canvas Canvas, int i, float X, float Y, float W, float H, bool
 	DrawStyle.DrawText( Canvas, MenuState, CellLeft, Y, CellWidth, H, TXTA_Left,
 		VRI.GameConfig[VRI.MapVoteCount[SortData[i].SortItem].GameConfigIndex].GameName, MyFontScale );
 
+	// "RANDOM MAP" renders in yellow here too, mirroring
+	// MVMultiColumnList.DrawItem() - applied at draw time only, never baked
+	// into the replicated MapName field. Votes for it are expected to
+	// visibly accumulate in this leaderboard exactly like a real map (see
+	// KFVotingHandler.TallyVotesInternal()'s deferred-resolution swap).
+	MapName = VRI.MapList[VRI.MapVoteCount[SortData[i].SortItem].MapIndex].MapName;
+	if( MapName ~= RANDOM_MAP_NAME )
+		MapName = Chr(0x1B)$Chr(255)$Chr(255)$Chr(1)$MapName;
+
 	GetCellLeftWidth( 1, CellLeft, CellWidth );
 	DrawStyle.DrawText( Canvas, MenuState, CellLeft, Y, CellWidth, H, TXTA_Left,
-		VRI.MapList[VRI.MapVoteCount[SortData[i].SortItem].MapIndex].MapName, MyFontScale );
+		MapName, MyFontScale );
 
 	GetCellLeftWidth( 2, CellLeft, CellWidth );
 	DrawStyle.DrawText( Canvas, MenuState, CellLeft, Y, CellWidth, H, TXTA_Left,

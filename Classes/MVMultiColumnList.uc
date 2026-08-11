@@ -7,6 +7,13 @@ var array<int> UnfilteredData;
 var string OldFilter;
 var eFontScale MyFontScale;  // soomebody is messing up with the self.FontScale
 
+// Must match KFVotingHandler.RANDOM_MAP_NAME exactly (server-side source of
+// truth) - duplicated here since no shared base class conveniently spans
+// client and server; same duplication convention this file already uses for
+// Prefix/SkipList/MapListStyle filtering logic (server-side counterpart:
+// KFVotingHandler.IsMapValidForGameConfig()).
+const RANDOM_MAP_NAME = "RANDOM MAP";
+
 
 function InitComponent(GUIController MyController, GUIComponent MyOwner)
 {
@@ -64,6 +71,21 @@ function LoadList(VotingReplicationInfo LoadVRI, int GameTypeIndex)
 		MapListStyle = KFVRI.GameConfigMapListStyle[GameTypeIndex];
 		if( MapListStyle != "All" && GameTypeIndex < KFVRI.GameConfigMapListValue.Length )
 			Split(KFVRI.GameConfigMapListValue[GameTypeIndex], ",", ModeMapList);
+	}
+
+	// "RANDOM MAP" (see KFVotingHandler.AddRandomMapSentinel()) is force-
+	// included first in every mode's list, ignoring Prefix/MapListStyle
+	// entirely - it deliberately never matches any real mode's Prefix list,
+	// so the ordinary matching loop below would otherwise never include it.
+	for( m=0; m<VRI.MapList.Length; m++ )
+	{
+		if( RANDOM_MAP_NAME ~= VRI.MapList[m].MapName )
+		{
+			UnfilteredData.Insert(0,1);
+			UnfilteredData[0] = m;
+			AddedItem();
+			break;
+		}
 	}
 
 	for( m=0; m<VRI.MapList.Length; m++)
@@ -182,6 +204,18 @@ function DrawItem(Canvas Canvas, int i, float X, float Y, float W, float H, bool
 		MState = MSAT_Disabled;
 	}
 
+	// "RANDOM MAP" renders in yellow - applied here, at draw time only, never
+	// baked into the stored/replicated MapName field itself (which
+	// ApplyFilter()'s search, GetSortString(), and the server's own
+	// Prefix/tie-break matching all read raw and would break if it carried
+	// escape bytes). Same color-escape convention already established in
+	// KFVotingReplicationInfo.InitRepStr() for the Rating column
+	// (Chr(0x1B)$Chr(R)$Chr(G)$Chr(1)$text) - R=255/G=255 never trips that
+	// file's "avoid byte 0/10" guard, so the blue byte is safely hardcoded
+	// to Chr(1) matching its existing convention.
+	if( VRI.MapList[MapVoteData[SortData[i].SortItem]].MapName ~= RANDOM_MAP_NAME )
+		MapName = Chr(0x1B)$Chr(255)$Chr(255)$Chr(1)$MapName;
+
 	GetCellLeftWidth(0, CellLeft, CellWidth);
 	DrawStyle.DrawText(Canvas, MState, CellLeft, Y, CellWidth, H, TXTA_Left,
 		MapName, MyFontScale);
@@ -206,7 +240,16 @@ function string GetSortString( int i )
 	if (i >= MapVoteData.Length)
 		return "";
 
-	ColumnData[0] = Left(Caps(VRI.MapList[MapVoteData[i]].MapName),20);
+	// "RANDOM MAP" gets a fixed low-sorting Name-column key ("1" sorts before
+	// any real map's "KF-..." name) so it floats back to the top for free
+	// whenever a player sorts by Name ascending, without needing to
+	// intercept the native sort mechanism. Descending Name-sort and sorting
+	// by the other columns are accepted v1 gaps - no pinned-row concept
+	// exists in this list, only this cheap sort-key trick.
+	if( VRI.MapList[MapVoteData[i]].MapName ~= RANDOM_MAP_NAME )
+		ColumnData[0] = "1";
+	else
+		ColumnData[0] = Left(Caps(VRI.MapList[MapVoteData[i]].MapName),20);
 	ColumnData[1] = Right("000000" $ VRI.MapList[MapVoteData[i]].PlayCount,6);
 	ColumnData[2] = Right("000000" $ VRI.MapList[MapVoteData[i]].Sequence,6);
 	ColumnData[3] = KFVotingReplicationInfo(VRI).SortedArray[MapVoteData[i]];

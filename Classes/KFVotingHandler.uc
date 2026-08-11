@@ -20,6 +20,16 @@
 class KFVotingHandler extends xVotingHandler
 	Config(KFMapVote);
 
+// Reserved sentinel MapList entry name for the "RANDOM MAP" vote option (see
+// AddRandomMapSentinel() below). Duplicated client-side in
+// MVMultiColumnList.uc's LoadList()/DrawItem()/GetSortString() and
+// MVCountColumnList.uc's DrawItem() - no shared base class conveniently
+// spans client and server here, so this is duplicated the same way this
+// package already duplicates its Prefix/SkipList/MapListStyle filtering
+// logic between client (LoadList()) and server (IsMapValidForGameConfig())
+// for defense-in-depth. Keep both copies in sync if this ever changes.
+const RANDOM_MAP_NAME = "RANDOM MAP";
+
 var config bool bShowMapLike;
 var config bool bSpectatorsCanVote;
 
@@ -443,6 +453,43 @@ function LoadMapList()
 {
 	MapListLoaderType = string(Class'KFXMapListLoader');
 	Super.LoadMapList();
+	AddRandomMapSentinel();
+}
+
+// Appends one synthetic, reserved MapList entry ("RANDOM MAP") so it can be
+// voted for like any real map (see IsMapValidForGameConfig()'s carve-out and
+// TallyVotesInternal()'s deferred-resolution swap below). Deliberately
+// mirrors only the array-growth part of AddMap() below (MapList/RepArray/
+// MapPreviewArray kept in lock-step via MapCount) - never calls
+// History.GetMapHistory()/History.AddMap() or
+// MVMapRepHistory.GetMapHistoryRep(), since this isn't a real map and
+// shouldn't pollute the map-history or reputation INIs. Called once from
+// LoadMapList() above, after Super.LoadMapList() has fully rebuilt MapList/
+// MapCount from the real map pool (including any bEliminationMode reload,
+// which happens entirely inside Super.LoadMapList() before it returns here).
+final function AddRandomMapSentinel()
+{
+	local int i;
+
+	for( i=0; i<MapList.Length; i++ )  // dont add duplicate - same guard AddMap() uses
+		if( RANDOM_MAP_NAME ~= MapList[i].MapName )
+			return;
+
+	RepArray.Length = MapCount + 1;
+	RepArray[MapCount].Positive = 0;
+	RepArray[MapCount].Negative = 0;
+
+	// TextureRef/Author/PlayerCountMin/Max left at defaults (blank/0) - falls
+	// back to KFMapVoteFooterX's existing "No Preview Available" path, same as
+	// any real map with no KFMapVotePreviews.ini override.
+	MapPreviewArray.Length = MapCount + 1;
+
+	MapList.Length = MapCount + 1;
+	MapList[MapCount].MapName = RANDOM_MAP_NAME;
+	MapList[MapCount].PlayCount = 0;
+	MapList[MapCount].Sequence = 0;
+	MapList[MapCount].bEnabled = true;
+	MapCount++;
 }
 
 static event bool AcceptPlayInfoProperty(string PropertyName)
@@ -495,6 +542,22 @@ function SubmitMapVote(int MapIndex, int GameIndex, Actor Voter)
 
 	if( bAdminForce && (PRI.bAdmin || PRI.bSilentAdmin) )  // Administrator Vote
 	{
+		// RANDOM MAP resolution swap (not present upstream) - an admin can
+		// force-select the sentinel directly, bypassing TallyVotesInternal()
+		// entirely, so this call site needs its own copy of the same swap.
+		// GameIndex is passed as the requested mode and only ever rewritten
+		// by PickRandomMapForGameConfig() in the fully-degenerate fallback
+		// case (no real map qualifies for it at all) - see that function.
+		if( MapList[MapIndex].MapName ~= RANDOM_MAP_NAME )
+		{
+			PickRandomMapForGameConfig(GameIndex, MapIndex);
+			SetRandomMapVoteFlag(true);
+		}
+		else
+		{
+			SetRandomMapVoteFlag(false); // defensive reset - a real map was chosen directly
+		}
+
 		TextMessage = lmsgAdminMapChange;
 		TextMessage = Repl(TextMessage, "%mapname%", MapList[MapIndex].MapName $ "(" $ GameConfig[GameIndex].Acronym $ ")");
 		Level.Game.Broadcast(self,TextMessage);
@@ -584,13 +647,225 @@ function TallyVotes(bool bForceMapSwitch)
 	local int C;
 
 	if (!bSpectatorsCanVote) {
-		super.TallyVotes(bForceMapSwitch);
+		TallyVotesInternal(bForceMapSwitch);
 	}
 
 	C = Level.Game.NumPlayers;
 	Level.Game.NumPlayers+=Level.Game.NumSpectators;
-	Super.TallyVotes(bForceMapSwitch);
+	TallyVotesInternal(bForceMapSwitch);
 	Level.Game.NumPlayers = C;
+}
+
+// ====================================================================
+// Full duplicate of the base engine's xVotingHandler.TallyVotes()
+// (XVoting/Classes/xVotingHandler.uc, lines ~546-716 as last verified)
+// - same pattern this file already uses for SetupGameMap() above, just a
+// larger instance of it. Needed because the winner-resolution logic below
+// (ranking, tie-break, win broadcast, History.PlayMap(), SetupGameMap(),
+// Level.ServerTravel()) has no override seam between "topmap is finalized"
+// and "broadcast/History/travel fire" - SetupGameMap() (already overridden)
+// is called too late, after the win broadcast has already rendered the map
+// name to every player and after History.PlayMap() has already run. The
+// ONLY change from the base version is the swap block immediately after the
+// blank-MapName guard below, which resolves a winning "RANDOM MAP" vote
+// (see AddRandomMapSentinel()/IsMapValidForGameConfig() above) into a real
+// destination map before anything downstream (broadcast, History, travel)
+// ever sees the sentinel - everything else is byte-for-byte from upstream.
+// If XVoting is ever updated, re-diff this function against the new
+// xVotingHandler.TallyVotes() and reapply just that one swap block.
+// ====================================================================
+final function TallyVotesInternal(bool bForceMapSwitch)
+{
+	local int        index,x,y,topmap,r,mapidx,gameidx;
+	local array<int> VoteCount;
+	local array<int> Ranking;
+	local int        PlayersThatVoted;
+	local int        TieCount;
+	local string     CurrentMap;
+	local int        Votes;
+	local MapHistoryInfo MapInfo;
+
+	if(bLevelSwitchPending)
+		return;
+
+	PlayersThatVoted = 0;
+	VoteCount.Length = GameConfig.Length * MapCount;
+	// note: VoteCount array is a 2 dimension array VoteCount[GameConfigIndex, MapIndex]
+	//       Maps ->
+	//       0 1 2 3 4 5 6 7 8
+	// G     - - - - - - - - -
+	// a  0 |0 0 0 0 0 0 0 2 0
+	// m  1 |0 0 0 2 0 0 0 0 0
+	// e  2 |0 6 0 0 0 5 0 0 0
+	// s  3 |0 0 0 3 0 0 0 0 0
+
+	for(x=0;x < MVRI.Length;x++) // for each player
+	{
+		if(MVRI[x] != none && MVRI[x].MapVote > -1 && MVRI[x].GameVote > -1) // if this player has voted
+		{
+			PlayersThatVoted++;
+
+			if(bScoreMode)
+			{
+				if(bAccumulationMode)
+					Votes = GetAccVote(MVRI[x].PlayerOwner) + int(GetPlayerScore(MVRI[x].PlayerOwner));
+				else
+					Votes = int(GetPlayerScore(MVRI[x].PlayerOwner));
+			}
+			else
+			{  // Not Score Mode == Majority (one vote per player)
+				if(bAccumulationMode)
+					Votes = GetAccVote(MVRI[x].PlayerOwner) + 1;
+				else
+					Votes = 1;
+			}
+			VoteCount[MVRI[x].GameVote * MapCount + MVRI[x].MapVote] = VoteCount[MVRI[x].GameVote * MapCount + MVRI[x].MapVote] + Votes;
+
+			if(!bScoreMode)
+			{
+				// If more then half the players voted for the same map as this player then force a winner
+				if(Level.Game.NumPlayers > 2 && float(VoteCount[MVRI[x].GameVote * MapCount + MVRI[x].MapVote]) / float(Level.Game.NumPlayers) > 0.5 && Level.Game.bGameEnded)
+					bForceMapSwitch = true;
+			}
+		}
+	}
+	log("___Voted - " $ PlayersThatVoted,'MapVoteDebug');
+
+	if(Level.Game.NumPlayers > 2 && !Level.Game.bGameEnded && !bMidGameVote && (float(PlayersThatVoted) / float(Level.Game.NumPlayers)) * 100 >= MidGameVotePercent) // Mid game vote initiated
+	{
+		Level.Game.Broadcast(self,lmsgMidGameVote);
+		bMidGameVote = true;
+		// Start voting count-down timer
+		TimeLeft = VoteTimeLimit;
+		ScoreBoardTime = 1;
+		settimer(1,true);
+	}
+
+	index = 0;
+	for(x=0;x < VoteCount.Length;x++) // for each map
+	{
+		if(VoteCount[x] > 0)
+		{
+			Ranking.Insert(index,1);
+			Ranking[index++] = x; // copy all vote indexes to the ranking list if someone has voted for it.
+		}
+	}
+
+	if(PlayersThatVoted > 1)
+	{
+		// bubble sort ranking list by vote count
+		for(x=0; x<index-1; x++)
+		{
+			for(y=x+1; y<index; y++)
+			{
+				if(VoteCount[Ranking[x]] < VoteCount[Ranking[y]])
+				{
+				topmap = Ranking[x];
+				Ranking[x] = Ranking[y];
+				Ranking[y] = topmap;
+				}
+			}
+		}
+	}
+	else
+	{
+		if(PlayersThatVoted == 0)
+		{
+			GetDefaultMap(mapidx, gameidx);
+			topmap = gameidx * MapCount + mapidx;
+		}
+		else
+			topmap = Ranking[0];  // only one player voted
+	}
+
+	//Check for a tie
+	if(PlayersThatVoted > 1) // need more than one player vote for a tie
+	{
+		if(index > 1 && VoteCount[Ranking[0]] == VoteCount[Ranking[1]] && VoteCount[Ranking[0]] != 0)
+		{
+			TieCount = 1;
+			for(x=1; x<index; x++)
+			{
+				if(VoteCount[Ranking[0]] == VoteCount[Ranking[x]])
+				TieCount++;
+			}
+			//reminder ---> int Rand( int Max ); Returns a random number from 0 to Max-1.
+			topmap = Ranking[Rand(TieCount)];
+
+			// Don't allow same map to be choosen
+			CurrentMap = GetURLMap();
+
+			r = 0;
+			while(MapList[topmap - (topmap/MapCount) * MapCount].MapName ~= CurrentMap)
+			{
+				topmap = Ranking[Rand(TieCount)];
+				if(r++>100)
+					break;  // just incase
+			}
+		}
+		else
+		{
+			topmap = Ranking[0];
+		}
+	}
+
+	// if everyone has voted go ahead and change map
+	if(bForceMapSwitch || (Level.Game.NumPlayers == PlayersThatVoted && Level.Game.NumPlayers > 0) )
+	{
+		if(MapList[topmap - topmap/MapCount * MapCount].MapName == "")
+			return;
+
+		// ---- RANDOM MAP resolution swap (not present upstream) ----
+		// If the winning bucket is the "RANDOM MAP" sentinel, resolve it to a
+		// real, valid map for the winning mode now - the only point where
+		// this is safe to do, since everything below this line (broadcast
+		// text, History.PlayMap(), SetupGameMap()) must see the REAL
+		// destination map, not the sentinel. See PickRandomMapForGameConfig()
+		// and SetRandomMapVoteFlag() above.
+		mapidx  = topmap - topmap/MapCount * MapCount;
+		gameidx = topmap/MapCount;
+
+		if( MapList[mapidx].MapName ~= RANDOM_MAP_NAME )
+		{
+			PickRandomMapForGameConfig(gameidx, mapidx);
+			topmap = gameidx * MapCount + mapidx;
+			SetRandomMapVoteFlag(true);
+		}
+		else
+		{
+			SetRandomMapVoteFlag(false); // defensive reset - a real map won outright
+		}
+		// ---- end RANDOM MAP resolution swap ----
+
+		TextMessage = lmsgMapWon;
+		TextMessage = repl(TextMessage,"%mapname%",MapList[topmap - topmap/MapCount * MapCount].MapName $ "(" $ GameConfig[topmap/MapCount].Acronym $ ")");
+		Level.Game.Broadcast(self,TextMessage);
+
+		CloseAllVoteWindows();
+
+		MapInfo = History.PlayMap(MapList[topmap - topmap/MapCount * MapCount].MapName);
+
+		ServerTravelString = SetupGameMap(MapList[topmap - topmap/MapCount * MapCount], topmap/MapCount, MapInfo);
+		log("ServerTravelString = " $ ServerTravelString ,'MapVoteDebug');
+
+		History.Save();
+
+		if(bEliminationMode)
+			RepeatLimit++;
+
+		if(bAccumulationMode)
+			SaveAccVotes(topmap - topmap/MapCount * MapCount, topmap/MapCount);
+
+		//if(bEliminationMode || bAccumulationMode)
+		CurrentGameConfig = topmap/MapCount;
+		if( !bAutoDetectMode )
+			SaveConfig();
+
+		bLevelSwitchPending = true;
+		settimer(Level.TimeDilation,true);  // timer() will monitor the server-travel and detect a failure
+
+		Level.ServerTravel(ServerTravelString, false);    // change the map
+	}
 }
 
 function AddMapVoteReplicationInfo(PlayerController Player)
@@ -627,6 +902,7 @@ function Timer()
 				ServerTravelString = SetupGameMap(MapList[mapidx], gameidx, MapInfo);
 				log("ServerTravelString = " $ ServerTravelString ,'MapVoteDebug');
 				History.Save();
+				SetRandomMapVoteFlag(false); // defensive reset - a failed-switch recovery is never a deliberate random-map outcome
 				Level.ServerTravel(ServerTravelString, false);    // change the map
 			}
 		}
@@ -861,6 +1137,14 @@ final function bool IsMapValidForGameConfig(int MapListIdx, int GCIdx)
 
 	MapName = MapList[MapListIdx].MapName;
 
+	// "RANDOM MAP" is valid for every mode by design - see
+	// AddRandomMapSentinel() above. It's never actually traveled to directly;
+	// TallyVotesInternal()'s deferred-resolution swap (and SubmitMapVote()'s
+	// bAdminForce branch) are the only places it's turned into a real
+	// destination map.
+	if( MapName ~= RANDOM_MAP_NAME )
+		return true;
+
 	A = GameConfig[GCIdx].Prefix;
 	Divide(A,"|",A,B);
 	Split(A, ",", PL);
@@ -1034,6 +1318,105 @@ function GetDefaultMap(out int mapidx, out int gameidx)
 		gameidx = DefaultGameConfig;
 	}
 	log("Default Map Choosen = " $ MapList[mapidx].MapName $ "(" $ GameConfig[gameidx].Acronym $ ")",'MapVoteDebug');
+}
+
+// Picks a real, enabled, Prefix/MapListStyle-valid map for a SPECIFIC
+// GameConfig index (unlike GetDefaultMap() above, which always targets
+// CurrentGameConfig/DefaultGameConfig) - used to resolve a winning "RANDOM
+// MAP" vote (see AddRandomMapSentinel()/IsMapValidForGameConfig() above) into
+// a real destination map. GCIdx/mapidx are both out/inout: GCIdx is read as
+// the requested mode and only ever rewritten in the fully-degenerate fallback
+// case described below. Mirrors GetDefaultMap()'s own random-draw /
+// 100-attempt-retry / linear-scan-fallback structure, but driven by
+// IsMapValidForGameConfig() instead of raw Prefix matching, so it also
+// respects MapListStyle Allow/Exclude (GetDefaultMap() itself predates
+// MapListStyle and doesn't check it - a separate, pre-existing gap, not
+// addressed here).
+//
+// IMPORTANT: because IsMapValidForGameConfig() deliberately returns true for
+// the sentinel's own index under EVERY GCIdx, this function must explicitly
+// exclude the sentinel's own index at every stage of its search - relying on
+// IsMapValidForGameConfig() alone would let it pick itself right back, which
+// would attempt Level.ServerTravel("RANDOM MAP?...") in the fully-degenerate
+// case of a mode with zero real qualifying maps. If no real candidate exists
+// at all for GCIdx, falls back to the existing GetDefaultMap() (sentinel-safe
+// by construction, since raw Prefix matching can never match "RANDOM MAP"),
+// accepting it may resolve to a different mode than GCIdx in that
+// fully-degenerate case - mirroring GetDefaultMap()'s own last-resort
+// behavior when nothing matches the requested mode either.
+final function PickRandomMapForGameConfig(out int GCIdx, out int mapidx)
+{
+	local int i,r,SentinelIdx;
+	local bool bLoop;
+
+	SentinelIdx = -1;
+	for( i=0; i<MapList.Length; i++ )
+		if( RANDOM_MAP_NAME ~= MapList[i].MapName )
+		{
+			SentinelIdx = i;
+			break;
+		}
+
+	if( MapCount <= 0 )
+	{
+		mapidx = 0;
+		return;
+	}
+
+	r = 0;
+	bLoop = true;
+	while( bLoop )
+	{
+		i = Rand(MapCount);
+		if( i != SentinelIdx && MapList[i].bEnabled && IsMapValidForGameConfig(i, GCIdx) )
+			bLoop = false;
+
+		if( bLoop && r++ > 100 )
+		{
+			// give up after 100 unsuccessful attempts - linear scan for the
+			// first qualifying map instead (mirrors GetDefaultMap()'s own
+			// fallback tier).
+			for( i=0; i<MapCount; ++i )
+			{
+				if( i != SentinelIdx && MapList[i].bEnabled && IsMapValidForGameConfig(i, GCIdx) )
+				{
+					bLoop = false;
+					break;
+				}
+			}
+			break;
+		}
+	}
+
+	if( !bLoop && i<MapCount && i!=SentinelIdx )
+	{
+		mapidx = i;
+		log("Random Map Choosen = " $ MapList[mapidx].MapName $ "(" $ GameConfig[GCIdx].Acronym $ ")",'MapVoteDebug');
+		return;
+	}
+
+	// Fully degenerate case: no real map qualifies for GCIdx at all.
+	log("___PickRandomMapForGameConfig: no real map qualifies for GameConfig "$GCIdx$" - falling back to GetDefaultMap().",'MapVote');
+	GetDefaultMap(mapidx, GCIdx);
+}
+
+// Writes a small, standalone signal (see KFRandomMapVoteFlag.uc) that a
+// completely separate mod - ScrnBalanceST - can optionally read after the
+// map change to apply its own "random map" stat bonus, the same way it
+// already does for its own unrelated `mvote map random` chat-vote feature.
+// KFMapVoteST itself has zero awareness of ScrnBalanceST/ScrnBalance - this
+// class and this function work identically whether or not that mod is even
+// installed. Called at every Level.ServerTravel() call site tied to vote
+// resolution (see TallyVotesInternal()'s winner block, SubmitMapVote()'s
+// bAdminForce branch, and Timer()'s failed-switch-recovery branch) so the
+// flag never lingers stale from an earlier round.
+final function SetRandomMapVoteFlag(bool bValue)
+{
+	local KFRandomMapVoteFlag F;
+
+	F = new class'KFRandomMapVoteFlag';
+	F.bWasRandomMapVote = bValue;
+	F.SaveConfig();
 }
 
 function string GetConfigArrayData(string ConfigArrayName, int RowIndex, int ColumnIndex)

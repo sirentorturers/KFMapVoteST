@@ -1,17 +1,17 @@
 # Voting Handler Fix ST
 
-A fork of KFMapVoteV3SE that resolves the biggest 2 bugs of KFMapVote dating all the way back to UT2004 and also will provide additional features in the coming weeks.
+A fork of KFMapVoteV3SE that resolves bugs and adds several new features. Most of the following is thanks to the conversion from arrays to PerObjectConfigs. We have far more flexibility now as a result.
 
-Immediate benefit of running this will be you will now have unlimited game modes and difficulties you can make available on your servers.
+- Unlimited game modes. 
+- Custom sort order (1, 2, etc, setting 0 for anything after sorts those alphabetically after the other numbers)
+- Difficulty drop down selector to clean up the mode list.
+- Map preview images (requires creating an image package, batch creation scripts provided in Tools folder)
+- Game mode descriptions.
+- Per mode map lists via Allow/Exclude map list styles. Use Copy style to match other mode map lists.
+- Proper Map List Downloading In Progress refresh without you needing to click out several times. No more pop up window, it just loads as soon as it is done downloading, no additional clicks required.
+- Random Map vote option at the top of map lists and in yellow text. ScrnBalance Hardcore Level bonuses link in via a few extra lines of code added in to ScrnBalance (I will send the code over to PooSH to see if he wants to officially integrate it, since it does not create a hard dependency on KFMapVoteST).
+
 
 To install, you must completely remove all previous KFMapVote files from your system folder, especially V3, as ScrnBalance will try to override to V3 regardless of what you edit in ScrnBalanceSrv.ini to stop the override. Ensure you have your voting handler updated in your KillingFloor.ini to KFMapVoteST. Then, you must reconfigure your inis to work with our new methods for defining game modes. Please check the Configs folder for example inis. In short, GameConfig arrays are no longer defined in KFMapVote.ini, but in KFMapVoteModes.ini and using PerObjectConfigs instead of Arrays. If you run ScrnBalance and have edited ScrnGames, ScrnZeds, or any other inis like that, you should instantly be familiar with these.
-
-The limited modes issue was previously limited by 2 major bugs:
-
-Resolved Bug 1: The use of a single array introduced a character limit of 4095. If you exceeded that in your KFMapVote.ini GameConfig= lines, your server would crash on map change. In KFMapVoteST, that was completely resolved by moving away from arrays to PerObjectConfigs. This however, does mean you need to reconfigure your inis, please make sure you check the configs folder for example inis.
-
-Resolved Bug 2: After resolving the array issue, another bug was discovered in that the WebAdmin appears to have been limited in how much it could display under the game config sections, which led to the same exact crashes on map change unless the WebAdmin was disabled. Since I do use the WebAdmin but not for KFMapVote editing, I did not spend the time to research the issue, and opted to strip WebAdmin support out entirely for game config sections. Any self-respecting admin is editing the raw ini files anyways, so it felt unnecessary to waste any further time on this. 
-
-Future features planned: Separate difficulty drop down, map preview image with author, and game mode descriptions.
 
 Map preview images (screenshot, author, player count) shown in the map vote footer are built by a separate pipeline - see `PREVIEW_PIPELINE.md` for the full how-to.
