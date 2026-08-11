@@ -15,12 +15,38 @@ var localized string strDownloadingMapList;
 // so we always know what to compare candidate modes' distance against.
 var string CurrentDifficulty;
 
+// Root cause of the "difficulty/mode both revert on menu open" bug,
+// confirmed via real in-game step-by-step diagnostics: co_Difficulty and
+// co_GameType both have OnChange handlers wired (OnDifficultyChanged/
+// GameTypeChanged - the latter wired by the base engine's own
+// super.InternalOnOpen(), not by this file), and populating an initially-
+// empty moComboBox via Clear()/AddItem() fires that OnChange handler for
+// the first item added, exactly as if the player had manually picked it.
+// Without this guard, BuildDifficultyList()'s first AddItem() call (always
+// "Hard", DifficultyOrder[0]) fired OnDifficultyChanged() with
+// NewDifficulty="Hard" BEFORE InternalOnOpen()'s own intentional
+// difficulty-selection logic ever ran - which then rebuilt/reselected
+// co_GameType around that wrong "Hard" default (using whatever the
+// ALREADY-CORRECT selection was, set moments earlier by
+// super.InternalOnOpen(), as PreviousIdx/PreferredGroup), landing on that
+// mode family's Hard-tier entry instead of the actually-voted one.
+// Confirmed precisely: a diagnostic right after super.InternalOnOpen()
+// showed co_GameType already correctly selected (index 12, "Burly Brawl
+// Suicidal"); a second diagnostic taken after BuildDifficultyList() alone
+// showed it had already changed to index 10 ("Burly Brawl Hard") - with
+// nothing else in this file's code running in between. Set true around
+// BuildDifficultyList()'s and RebuildGameTypeList()'s own Clear()/AddItem()
+// population, checked at the top of both OnChange handlers.
+var bool bSuppressComboEvents;
+
 // Display order for the difficulty dropdown's distinct values. Hardcoded
-// (edit + recompile to change) rather than ini-configurable - see the
-// note above DeriveDifficulty() for why: this used to be a replicated
-// array sourced from an ini, and that turned out to be what was crashing
-// the server on map change. Not worth the risk for a ~4-item list that
-// rarely changes.
+// (edit + recompile to change) rather than ini-configurable - a much
+// earlier version of this feature used a replicated array sourced from an
+// ini for a related purpose (a custom Difficulty=/ModeGroup= field), and
+// that turned out to be what was crashing the server on map change (see
+// KFVotingHandler.DeriveDifficulty()'s comments and CLAUDE.md's
+// replication gotchas). Not worth the risk for a ~4-item list that rarely
+// changes.
 var string DifficultyOrder[4];
 
 // Pre-check mirroring XVoting.MapVotingPage.InternalOnOpen()'s own guard
@@ -37,6 +63,9 @@ var string DifficultyOrder[4];
 // which still falls through to super.InternalOnOpen() below unchanged.
 function InternalOnOpen()
 {
+	local string SelectedGameName;
+	local KFVotingReplicationInfo KFMVRI;
+
 	if( MVRI != none && MVRI.bMapVote &&
 		(MVRI.GameConfig.Length < MVRI.GameConfigCount || MVRI.MapList.Length < MVRI.MapCount) )
 	{
@@ -50,6 +79,66 @@ function InternalOnOpen()
 
 	super.InternalOnOpen();
 
+	// Difficulty is computed server-side (KFVotingHandler.DeriveDifficulty(),
+	// from GameName) and replicated directly per-entry as
+	// KFVotingReplicationInfo.GameConfigDifficulty - read straight from
+	// there below, no client-side text-parsing involved. (Mode-family
+	// filtering via DeriveModeGroup() below is a separate, unrelated
+	// concern and stays client-side - mode-selection itself has never
+	// depended on it.) All we need here is confirmation GameConfig itself
+	// is populated - which super.InternalOnOpen() already guarantees
+	// before returning normally (it bails to a separate "still loading"
+	// page otherwise). No extra replication-readiness guard needed.
+	//
+	// The default difficulty is whatever CurrentGameConfig() (MVRI's
+	// CurrentGameConfig, set server-side in KFVotingHandler.PostBeginPlay())
+	// actually is right now - i.e. the true live mode/difficulty. That
+	// naturally tracks "the last thing voted for and traveled to" without
+	// needing to persist anything client-side at all.
+	//
+	// Deliberately placed BEFORE the !bHasFocus early-return below, and
+	// unconditional on it - unlike mode-selection (set unconditionally by
+	// super.InternalOnOpen() just above), this used to run only once
+	// bHasFocus was already true, which silently left the difficulty combo
+	// at BuildDifficultyList()'s implicit default ("Hard", DifficultyOrder[0])
+	// whenever this exact call happened to fire without focus yet (a real,
+	// previously-observed condition on this exact page - see the comment
+	// on the focus check itself, "fixes PreDraw errors"). Mirroring mode-
+	// selection's unconditional placement removes that gap.
+	if( MVRI != none && MVRI.bMapVote && MVRI.GameConfig.Length > 0 )
+	{
+		BuildDifficultyList();
+
+		CurrentDifficulty = "";
+		SelectedGameName = "?";
+		KFMVRI = KFVotingReplicationInfo(MVRI);
+		if( KFMVRI != none && CurrentGameConfig() > -1
+			&& CurrentGameConfig() < KFMVRI.GameConfig.Length
+			&& CurrentGameConfig() < KFMVRI.GameConfigDifficulty.Length )
+		{
+			SelectedGameName = KFMVRI.GameConfig[CurrentGameConfig()].GameName;
+			CurrentDifficulty = KFMVRI.GameConfigDifficulty[CurrentGameConfig()];
+		}
+
+		if( CurrentDifficulty != "" )
+		{
+			SelectDifficultyItem(CurrentDifficulty);
+			RebuildGameTypeList(CurrentDifficulty, DeriveModeGroup(MVRI.GameConfig[CurrentGameConfig()].GameName), CurrentGameConfig());
+		}
+		else if( SelectedGameName != "?" )
+		{
+			// Server sent a blank Difficulty for the actually-selected
+			// entry - either a genuine no-difficulty-tiers mode (expected,
+			// e.g. "Follow the Guardian") or a real edge case
+			// KFVotingHandler.DeriveDifficulty()'s whitelist doesn't cover.
+			// Logged so the two cases aren't silently indistinguishable if
+			// this keeps happening.
+			log("KFMapVotingPageX: server sent blank Difficulty for GameConfig["
+				$CurrentGameConfig()$"].GameName=\""$SelectedGameName
+				$"\" - difficulty combo left at default.",'STVoteDiag');
+		}
+	}
+
 	if (!bHasFocus) {
 		// fixes PreDraw errors
 		lb_MapListBox.SetVisibility(false);
@@ -60,38 +149,8 @@ function InternalOnOpen()
 	lb_MapListBox.SetVisibility(true);
 	lb_VoteCountListBox.SetVisibility(true);
 
-	// Difficulty and mode-family are derived entirely from
-	// MVRI.GameConfig[i].GameName text (see DeriveDifficulty()/
-	// DeriveModeGroup() below) rather than any dedicated replicated
-	// property, so all we need here is confirmation GameConfig itself is
-	// populated - which super.InternalOnOpen() already guarantees before
-	// returning normally (it bails to a separate "still loading" page
-	// otherwise). No extra replication-readiness guard needed.
-	//
-	// The default difficulty is whatever CurrentGameConfig() (MVRI's
-	// CurrentGameConfig, set server-side in KFVotingHandler.PostBeginPlay())
-	// actually is right now - i.e. the true live mode/difficulty, computed
-	// from GameClass+GameLength server-side rather than any per-player
-	// preference. That naturally tracks "the last thing voted for and
-	// traveled to" without needing to persist anything client-side at all.
-	if( MVRI != none && MVRI.bMapVote && MVRI.GameConfig.Length > 0 )
-	{
-		BuildDifficultyList();
-
-		CurrentDifficulty = "";
-		if( CurrentGameConfig() > -1 && CurrentGameConfig() < MVRI.GameConfig.Length )
-			CurrentDifficulty = DeriveDifficulty(MVRI.GameConfig[CurrentGameConfig()].GameName);
-
-		if( CurrentDifficulty != "" )
-		{
-			SelectDifficultyItem(CurrentDifficulty);
-			RebuildGameTypeList(CurrentDifficulty, DeriveModeGroup(MVRI.GameConfig[CurrentGameConfig()].GameName), CurrentGameConfig());
-		}
-	}
-
-	// Covers both branches above (filtered and not) - GameTypeChanged()
-	// keeps this in sync from here on for every subsequent mode/difficulty
-	// change.
+	// GameTypeChanged() keeps this in sync from here on for every
+	// subsequent mode/difficulty change.
 	UpdateDescriptionLabel(CurrentGameConfig());
 
 	if (f_Chat.ed_Chat.GetText() != "") {
@@ -246,6 +305,9 @@ function SendVote(GUIComponent Sender)
 
 function GameTypeChanged(GUIComponent Sender)
 {
+	if( bSuppressComboEvents )
+		return;
+
 	super.GameTypeChanged(Sender);
 	SearchEdit.SetText("");
 	UpdateDescriptionLabel(CurrentGameConfig());
@@ -427,24 +489,6 @@ final function bool EndsWithWord(string Text, string Suffix)
 	return false;
 }
 
-// Longest/most specific aliases checked first, so "Hell on Earth" is
-// found as a whole trailing phrase before any shorter alias could
-// partially match. Returns "" (unfiltered - always shown) if GameName
-// doesn't end in any recognized difficulty word - hand-verified against
-// every entry in the current KFMapVoteModes.ini, including the tricky
-// ones ("HardBoss: HoE", "LoneGunmen Advanced HOE", the three-word
-// "...Hell on Earth").
-final function string DeriveDifficulty(string GameName)
-{
-	if( EndsWithWord(GameName, "Hell on Earth") ) return "Hell on Earth";
-	if( EndsWithWord(GameName, "Suicidal") )      return "Suicidal";
-	if( EndsWithWord(GameName, "Brutal") )        return "Brutal";
-	if( EndsWithWord(GameName, "Hard") )          return "Hard";
-	if( EndsWithWord(GameName, "HoE") )           return "Hell on Earth";
-	if( EndsWithWord(GameName, "Sui") )           return "Suicidal";
-	return "";
-}
-
 // Strips a leading "NN. " index (e.g. "00. Standard: Hard") and a
 // trailing recognized difficulty word/phrase, leaving the shared "mode
 // family" name - e.g. "00. Standard: Hard" -> "Standard", "Chocolate
@@ -499,22 +543,34 @@ final function string DeriveModeGroup(string GameName)
 }
 
 // Populates co_Difficulty with every distinct, non-blank difficulty found
-// across GameConfig's GameName values, ordered per DifficultyOrder first,
-// then any leftover values (not listed in DifficultyOrder) appended
-// alphabetically. Deliberately never calls List.SortList() on this combo
-// - that's what silently re-alphabetizes co_GameType regardless of
-// GameConfig's own SortOrder (see KFVotingHandler.BuildGameConfig()'s
-// comments) - here we want our own explicit order to actually stick.
+// across the server-replicated GameConfigDifficulty array (index-matched
+// with GameConfig - see KFVotingHandler.GameConfigDifficulty), ordered per
+// DifficultyOrder first, then any leftover values (not listed in
+// DifficultyOrder) appended alphabetically. Deliberately never calls
+// List.SortList() on this combo - that's what silently re-alphabetizes
+// co_GameType regardless of GameConfig's own SortOrder (see
+// KFVotingHandler.BuildGameConfig()'s comments) - here we want our own
+// explicit order to actually stick.
 final function BuildDifficultyList()
 {
 	local array<string> Distinct, Leftover;
 	local int i, j;
 	local bool bFound;
 	local string D;
+	local KFVotingReplicationInfo KFMVRI;
 
-	for( i=0; i<MVRI.GameConfig.Length; i++ )
+	KFMVRI = KFVotingReplicationInfo(MVRI);
+	if( KFMVRI == none )
 	{
-		D = DeriveDifficulty(MVRI.GameConfig[i].GameName);
+		bSuppressComboEvents = true;
+		co_Difficulty.MyComboBox.List.Clear();
+		bSuppressComboEvents = false;
+		return;
+	}
+
+	for( i=0; i<KFMVRI.GameConfig.Length && i<KFMVRI.GameConfigDifficulty.Length; i++ )
+	{
+		D = KFMVRI.GameConfigDifficulty[i];
 		if( D == "" )
 			continue;
 		bFound = false;
@@ -530,6 +586,13 @@ final function BuildDifficultyList()
 			Distinct[Distinct.Length] = D;
 	}
 
+	// See bSuppressComboEvents' declaration - populating an initially-empty
+	// moComboBox fires OnChange (OnDifficultyChanged) for the first item
+	// added, exactly as if the player had picked it. Suppressed for the
+	// duration of this rebuild; InternalOnOpen()'s own explicit selection
+	// logic (which runs right after this function returns) is what's
+	// actually supposed to decide the real selection.
+	bSuppressComboEvents = true;
 	co_Difficulty.MyComboBox.List.Clear();
 
 	// Ordered entries first, removing each from Distinct as it's placed so
@@ -555,6 +618,7 @@ final function BuildDifficultyList()
 	}
 	for( i=0; i<Leftover.Length; i++ )
 		co_Difficulty.AddItem(Leftover[i], none, Leftover[i]);
+	bSuppressComboEvents = false;
 }
 
 // In-place selection-sort step (alphabetical, case-insensitive) - swaps the
@@ -646,8 +710,24 @@ final function int RebuildGameTypeList(string Difficulty, string PreferredGroup,
 	local int i, d, BestIdx, BestDist, BestOrderIdx, Dist, CandOrderIdx;
 	local bool bMatchesFilter;
 	local string EntryDifficulty;
+	local KFVotingReplicationInfo KFMVRI;
 
+	// See bSuppressComboEvents' declaration - populating an initially-empty
+	// moComboBox fires OnChange (GameTypeChanged, wired by the base
+	// engine's own super.InternalOnOpen()) for the first item added, same
+	// mechanism confirmed for co_Difficulty/OnDifficultyChanged. Suppressed
+	// for the duration of this rebuild - the real selection is decided
+	// explicitly below via SetIndex(), which is already confirmed not to
+	// trigger OnChange on its own.
+	bSuppressComboEvents = true;
 	co_GameType.MyComboBox.List.Clear();
+
+	KFMVRI = KFVotingReplicationInfo(MVRI);
+	if( KFMVRI == none )
+	{
+		bSuppressComboEvents = false;
+		return -1;
+	}
 
 	// Loop runs i=0..GameConfig.Length-1 in index order, and GameConfig's
 	// index order already IS the final display order the server intends -
@@ -657,7 +737,9 @@ final function int RebuildGameTypeList(string Difficulty, string PreferredGroup,
 	// that order for free - nothing else to do here.
 	for( i=0; i<MVRI.GameConfig.Length; i++ )
 	{
-		EntryDifficulty = DeriveDifficulty(MVRI.GameConfig[i].GameName);
+		EntryDifficulty = "";
+		if( i < KFMVRI.GameConfigDifficulty.Length )
+			EntryDifficulty = KFMVRI.GameConfigDifficulty[i];
 		bMatchesFilter = ( EntryDifficulty=="" )
 			|| ( EntryDifficulty~=Difficulty )
 			|| ( FamilyCount(DeriveModeGroup(MVRI.GameConfig[i].GameName))==1 );
@@ -668,6 +750,7 @@ final function int RebuildGameTypeList(string Difficulty, string PreferredGroup,
 			VisibleIndices[VisibleIndices.Length] = i;
 		}
 	}
+	bSuppressComboEvents = false;
 	// Deliberately NOT calling co_GameType.MyComboBox.List.SortList() here
 	// (the base class's own InternalOnOpen() does call it, on its own
 	// initial population of co_GameType - harmless, since this function
@@ -695,7 +778,9 @@ final function int RebuildGameTypeList(string Difficulty, string PreferredGroup,
 		{
 			if( DeriveModeGroup(MVRI.GameConfig[VisibleIndices[i]].GameName) ~= PreferredGroup )
 			{
-				EntryDifficulty = DeriveDifficulty(MVRI.GameConfig[VisibleIndices[i]].GameName);
+				EntryDifficulty = "";
+				if( VisibleIndices[i] < KFMVRI.GameConfigDifficulty.Length )
+					EntryDifficulty = KFMVRI.GameConfigDifficulty[VisibleIndices[i]];
 				Dist = OrdinalDistance(Difficulty, EntryDifficulty);
 				if( Dist == -1 )
 					continue;
@@ -726,6 +811,9 @@ function OnDifficultyChanged(GUIComponent Sender)
 {
 	local string NewDifficulty, PreferredGroup;
 	local int PreviousIdx, ResolvedIdx;
+
+	if( bSuppressComboEvents )
+		return;
 
 	NewDifficulty = co_Difficulty.GetExtra();
 	if( NewDifficulty == "" || NewDifficulty == CurrentDifficulty )

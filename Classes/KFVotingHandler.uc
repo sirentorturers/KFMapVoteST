@@ -95,6 +95,28 @@ var array<string> GameConfigDescriptions;
 var array<string> GameConfigMapListStyle;
 var array<string> GameConfigMapListValue;
 
+// Per-mode difficulty word, derived server-side from GameName (via
+// DeriveDifficulty()/EndsWithWord() below) in BuildGameConfig() - same
+// index-matched-parallel-array convention as GameConfigDescriptions above,
+// delivered to clients the same way (see KFVotingReplicationInfo). This
+// used to be derived client-side, independently, in KFMapVotingPageX -
+// moved server-side so every client gets one server-computed answer
+// instead of each client re-parsing GameName text itself (also removes
+// any dependency on exactly which compiled package version a given
+// client happens to be running).
+var array<string> GameConfigDifficulty;
+
+// Set by PostBeginPlay() when a CurrentGameConfig re-validation is queued
+// (see RevalidateCurrentGameConfig() below) - Level.GetLocalURL() reads
+// empty this early in the actor lifecycle (confirmed, documented gotcha),
+// so the check is deferred to a repeating Timer() poll instead of running
+// synchronously. Timer() checks this flag first and consumes/clears it
+// before falling into its normal countdown/vote-cycle logic, so this
+// early one-shot poll never collides with the several unrelated
+// settimer(1,true) calls elsewhere in this file that drive the actual
+// vote cycle once voting opens (those all happen well after level start).
+var bool bPendingCurrentGameConfigCheck;
+
 // ------------------------------------------------------------------
 // Comparator for BuildGameConfig()'s sort pass: numbered entries
 // (SortOrder > 0) sort ascending by that number and always come before
@@ -189,6 +211,7 @@ final function BuildGameConfig()
 	GameConfigDescriptions.Length = Entries.Length;
 	GameConfigMapListStyle.Length = Entries.Length;
 	GameConfigMapListValue.Length = Entries.Length;
+	GameConfigDifficulty.Length = Entries.Length;
 	for( i=0; i<Entries.Length; i++ )
 	{
 		GameConfig[i].GameClass = Entries[i].GameClass;
@@ -198,6 +221,7 @@ final function BuildGameConfig()
 		GameConfig[i].Mutators  = Entries[i].Mutators;
 		GameConfig[i].Options   = Entries[i].Options;
 		GameConfigDescriptions[i] = Entries[i].Description;
+		GameConfigDifficulty[i] = DeriveDifficulty(Entries[i].GameName);
 
 		ResolveMapList(Entries, Entries[i], ResolvedStyle, ResolvedValue);
 		GameConfigMapListStyle[i] = ResolvedStyle;
@@ -293,6 +317,64 @@ final function string GetGameConfigDescription(int Index)
 	return GameConfigDescriptions[Index];
 }
 
+// ------------------------------------------------------------------
+// True if Text ends with Suffix (case-insensitive) as a whole trailing
+// word - i.e. the character immediately before the match, if any, isn't
+// a letter. The boundary check is what stops e.g. "HardBoss: HoE" from
+// having "Hard" falsely matched inside "HardBoss" - only the actual
+// trailing "HoE" token counts. Ported verbatim from the client-side
+// version this replaces (KFMapVotingPageX.EndsWithWord()) - see
+// GameConfigDifficulty above for why this moved server-side.
+// ------------------------------------------------------------------
+final function bool EndsWithWord(string Text, string Suffix)
+{
+	local int TextLen, SuffixLen, BoundaryIdx;
+	local string BoundaryCaps;
+
+	TextLen = Len(Text);
+	SuffixLen = Len(Suffix);
+	if( SuffixLen == 0 || SuffixLen > TextLen )
+		return false;
+
+	if( Right(Text, SuffixLen) ~= Suffix )
+	{
+		BoundaryIdx = TextLen - SuffixLen - 1;
+		if( BoundaryIdx < 0 )
+			return true; // Suffix is the entire string.
+		BoundaryCaps = Caps(Mid(Text, BoundaryIdx, 1));
+		return !( Asc(BoundaryCaps) >= Asc("A") && Asc(BoundaryCaps) <= Asc("Z") );
+	}
+	return false;
+}
+
+// Longest/most specific aliases checked first, so "Hell on Earth" is
+// found as a whole trailing phrase before any shorter alias could
+// partially match. Returns "" if GameName doesn't end in any recognized
+// difficulty word (e.g. "FTG" - a genuine no-difficulty-tiers mode).
+// Ported verbatim from KFMapVotingPageX.DeriveDifficulty() - computed
+// once here, server-side, in BuildGameConfig(), and replicated directly
+// (see GameConfigDifficulty above) instead of every client re-deriving
+// its own answer from GameName text.
+final function string DeriveDifficulty(string GameName)
+{
+	if( EndsWithWord(GameName, "Hell on Earth") ) return "Hell on Earth";
+	if( EndsWithWord(GameName, "Suicidal") )      return "Suicidal";
+	if( EndsWithWord(GameName, "Brutal") )        return "Brutal";
+	if( EndsWithWord(GameName, "Hard") )          return "Hard";
+	if( EndsWithWord(GameName, "HoE") )           return "Hell on Earth";
+	if( EndsWithWord(GameName, "Sui") )           return "Suicidal";
+	return "";
+}
+
+// Index-bounds-checked accessor - same convention as
+// GetGameConfigDescription() above.
+final function string GetGameConfigDifficulty(int Index)
+{
+	if( Index < 0 || Index >= GameConfigDifficulty.Length )
+		return "";
+	return GameConfigDifficulty[Index];
+}
+
 // Index-bounds-checked accessors for the map-list-restriction parallel
 // arrays above - same convention as GetGameConfigDescription(). Default to
 // "All"/"" out of bounds so a not-yet-populated or malformed index just
@@ -317,16 +399,16 @@ final function string GetGameConfigMapListValue(int Index)
 // string like "KF-Afghanistan-ST?Game=SirenTorturers.G?GameLength=183".
 // Returns -1 if not found.
 // ------------------------------------------------------------------
-final function int ExtractGameLength(string Options)
+final function int ExtractOptionInt(string Options, string Key)
 {
 	local int Idx, EndIdx, i;
 	local string Tail, NumStr;
 
-	Idx = InStr(Options, "GameLength=");
+	Idx = InStr(Options, Key);
 	if( Idx == -1 )
 		return -1;
 
-	Tail = Mid(Options, Idx + Len("GameLength="));
+	Tail = Mid(Options, Idx + Len(Key));
 	EndIdx = InStr(Tail, "?");
 	if( EndIdx > -1 )
 		NumStr = Left(Tail, EndIdx);
@@ -347,27 +429,110 @@ final function int ExtractGameLength(string Options)
 	return int(NumStr);
 }
 
+// Kept as a thin wrapper - GameLength is the one option every mode family
+// sets (used as a purely synthetic per-entry marker for most modes, and as
+// the real wave count for Objective, whose 3 difficulty tiers all share
+// GameLength=16 - see ExtractOptionInt(Options, "Difficulty=") below,
+// which is what actually disambiguates those three from each other).
+final function int ExtractGameLength(string Options)
+{
+	return ExtractOptionInt(Options, "GameLength=");
+}
+
 // ------------------------------------------------------------------
-// Reads the live GameLength off Level.GetLocalURL() - a native LevelInfo
-// function returning the level's full current URL as a string, including
-// options (e.g. "KF-Afghanistan-ST?Game=SirenTorturers.G?GameLength=183").
-// Same native-function family as Level.GetURLMap(), which is already
-// proven working elsewhere in this project (StMapNameWriter) - this is
-// the sibling call that returns the whole URL instead of just the map
-// name. Feeds the result into ExtractGameLength() above. Returns -1 if
-// no GameLength option is present (or the call itself is somehow
-// unavailable - callers treat -1 as "can't verify, don't use this check").
+// Reads the live GameLength/Difficulty off Level.GetLocalURL() - a native
+// LevelInfo function returning the level's full current URL as a string,
+// including options (e.g.
+// "KF-Afghanistan-ST?Game=SirenTorturers.G?GameLength=183"). Same native-
+// function family as Level.GetURLMap(), which is already proven working
+// elsewhere in this project (StMapNameWriter) - this is the sibling call
+// that returns the whole URL instead of just the map name.
+//
+// NOT safe to call from PostBeginPlay() directly - confirmed, documented
+// gotcha: Level.GetLocalURL() reads empty that early in the actor
+// lifecycle. Only call this from RevalidateCurrentGameConfig() below,
+// which is deferred via Timer() specifically to avoid that.
 // ------------------------------------------------------------------
 final function int GetLiveGameLength()
 {
-	return ExtractGameLength(Level.GetLocalURL());
+	return ExtractOptionInt(Level.GetLocalURL(), "GameLength=");
+}
+
+final function int GetLiveDifficultyOption()
+{
+	return ExtractOptionInt(Level.GetLocalURL(), "Difficulty=");
+}
+
+// ------------------------------------------------------------------
+// Re-validates the persisted CurrentGameConfig index against the actual
+// live map/game state, and corrects it if it looks stale. Deferred out of
+// PostBeginPlay() (see bPendingCurrentGameConfigCheck/Timer() below)
+// because Level.GetLocalURL() reads empty that early in the actor
+// lifecycle (documented gotcha, confirmed previously in this project).
+//
+// IMPORTANT - GameLength/Difficulty are NOT used to decide bNeedsResolve
+// below, only logged. A first version of this function folded
+// GetLiveGameLength()/GetLiveDifficultyOption() into the match check on
+// the assumption that Level.GetLocalURL(), once non-empty, would contain
+// the same "GameLength=NNN"/"Difficulty=NNN" tokens SetupGameMap() writes
+// into the ServerTravel string. That was tested on the live server and
+// caused a real regression: mode-matching broke too, landing on
+// GameConfig[0] on every map change instead of just the wrong difficulty
+// tier. That means GetLocalURL() does NOT contain what was assumed once
+// reachable (still unconfirmed exactly what it does contain - the log
+// line below captures the raw string so a future session has real
+// evidence instead of another guess). Until that's confirmed, matching is
+// GameClass-only - the same check xVotingHandler used before any of this
+// difficulty-remembering work started, and the one already proven not to
+// break mode-selection. Note this also means Objective mode's 3
+// difficulty tiers (which share GameLength=16, see BuildGameConfig()'s
+// comments) are NOT currently disambiguated by this function - accepted
+// as out of scope until GameLength/Difficulty matching can be re-enabled
+// with a confirmed-correct read of the live URL.
+//
+// Diagnostic log() calls use the 'STVoteDiag' category deliberately - this
+// server's log filters out the 'MapVote'/'MapVoteDebug' categories
+// entirely (confirmed previously), so anything under those never shows up
+// no matter how correct the logic is.
+// ------------------------------------------------------------------
+final function RevalidateCurrentGameConfig()
+{
+	local int LiveGameLength, LiveDifficulty, i, PreviousGameConfig;
+	local bool bNeedsResolve;
+
+	PreviousGameConfig = CurrentGameConfig;
+	LiveGameLength = GetLiveGameLength();
+	LiveDifficulty = GetLiveDifficultyOption();
+
+	log("___RevalidateCurrentGameConfig: persisted="$PreviousGameConfig
+		$" LiveURL="$Level.GetLocalURL()$" LiveGameLength="$LiveGameLength
+		$" LiveDifficulty="$LiveDifficulty$" (diagnostic only - not used below)",'STVoteDiag');
+
+	bNeedsResolve = ( CurrentGameConfig < 0 || CurrentGameConfig >= GameConfig.Length );
+	if( !bNeedsResolve )
+		bNeedsResolve = !(string(Level.Game.Class) ~= GameConfig[CurrentGameConfig].GameClass);
+
+	if( bNeedsResolve )
+	{
+		// GameClass-only - see the comment above for why this doesn't (yet)
+		// also compare GameLength/Difficulty.
+		CurrentGameConfig = 0;
+		for( i=0; i<GameConfig.Length; i++)
+		{
+			if( GameConfig[i].GameClass ~= string(Level.Game.Class) )
+			{
+				CurrentGameConfig = i;
+				break;
+			}
+		}
+	}
+
+	log("___RevalidateCurrentGameConfig: resolved CurrentGameConfig="$CurrentGameConfig
+		$" GameName="$GameConfig[CurrentGameConfig].GameName$" bNeedsResolve="$bNeedsResolve,'STVoteDiag');
 }
 
 function PostBeginPlay()
 {
-	local int i;
-	local int LiveGameLength;
-
 	AddToPackageMap(); // Make sure in serverpackages.
 
 	// Assemble the live GameConfig array out of KFGameConfigEntry
@@ -395,40 +560,17 @@ function PostBeginPlay()
 		// check current game settings
 		if( GameConfig.Length > 0 )
 		{
-			// LiveGameLength disambiguates entries that share a GameClass
-			// (the vast majority here - "SirenTorturers.G" alone covers
-			// Standard, Dying Floor, Kitchen Sink, Casino Royale, and
-			// several others). Without this, CurrentGameConfig's cached
-			// index only gets re-validated against GameClass, which is
-			// almost always a loose enough match to pass even when the
-			// cached index is stale (e.g. after any KFMapVoteModes.ini
-			// edit shifts array positions) - so a stale index silently
-			// keeps pointing at whatever now occupies that slot, landing
-			// on the right mode family by coincidence but the wrong
-			// difficulty tier. Confirmed this exact failure mode directly
-			// against a live KFMapVote.ini snapshot before writing this.
-			LiveGameLength = GetLiveGameLength();
-
-			if( !(string(Level.Game.Class) ~= GameConfig[CurrentGameConfig].GameClass)
-				|| (LiveGameLength > -1 && ExtractGameLength(GameConfig[CurrentGameConfig].Options) != LiveGameLength) )
-			{
-				CurrentGameConfig = 0;
-				// Find the entry that's an exact match: same GameClass AND
-				// same GameLength, if we could read one. Falls back to
-				// GameClass-only (the original behavior) if LiveGameLength
-				// couldn't be determined, so a failed/unavailable
-				// GetLiveGameLength() call degrades no worse than before
-				// this change rather than breaking mode-matching entirely.
-				for( i=0; i<GameConfig.Length; i++)
-				{
-					if( GameConfig[i].GameClass ~= string(Level.Game.Class)
-						&& (LiveGameLength == -1 || ExtractGameLength(GameConfig[i].Options) == LiveGameLength) )
-					{
-						CurrentGameConfig = i;
-						break;
-					}
-				}
-			}
+			// Re-validating CurrentGameConfig here needs Level.GetLocalURL()
+			// (see RevalidateCurrentGameConfig()'s comment), which reads
+			// empty this early in PostBeginPlay() - deferred to a Timer()
+			// poll instead of running synchronously. Until that poll fires,
+			// CurrentGameConfig is left exactly as loaded from config (its
+			// value as of the last successful SaveConfig()), which is
+			// already correct in the common case (this is only a stale-
+			// index safety net, e.g. after a KFMapVoteModes.ini edit shifts
+			// array positions - not the primary source of truth).
+			bPendingCurrentGameConfigCheck = true;
+			SetTimer(0.2, true);
 		}
 		else
 			CurrentGameConfig = 0;
@@ -889,6 +1031,24 @@ function Timer()
 {
 	local int mapidx,gameidx,i;
 	local MapHistoryInfo MapInfo;
+
+	// Deferred CurrentGameConfig re-validation from PostBeginPlay() - see
+	// bPendingCurrentGameConfigCheck's declaration and
+	// RevalidateCurrentGameConfig() above. Re-fires every 0.2s (the
+	// SetTimer(0.2, true) call in PostBeginPlay() was set to loop) until
+	// Level.GetLocalURL() actually returns data, then does the real check
+	// once and cancels this timer - a real vote cycle hasn't started yet
+	// this early, so nothing else is relying on Timer() firing during this
+	// short window.
+	if( bPendingCurrentGameConfigCheck )
+	{
+		if( Level.GetLocalURL() == "" )
+			return;
+		bPendingCurrentGameConfigCheck = false;
+		SetTimer(0, false);
+		RevalidateCurrentGameConfig();
+		return;
+	}
 
 	if(bLevelSwitchPending)
 	{

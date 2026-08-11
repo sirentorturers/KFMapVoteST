@@ -35,6 +35,16 @@ var array<string> GameConfigDescriptions;
 var array<string> GameConfigMapListStyle;
 var array<string> GameConfigMapListValue;
 
+// Client-side mirror of KFVotingHandler.GameConfigDifficulty, index-matched
+// with GameConfig the same way GameConfigDescriptions is above - filled in
+// by the same overridden TickedReplication_GameConfig()/
+// ReceiveGameConfigRep() below (its RPC parameter list is widened further,
+// same reasoning as GameConfigDescriptions/GameConfigMapListStyle/
+// GameConfigMapListValue not being declared in the replication{} block
+// itself). KFMapVotingPageX reads this directly instead of deriving
+// difficulty client-side from GameName text.
+var array<string> GameConfigDifficulty;
+
 var sound AnnounceSnds[13];
 var byte MapRepVote;
 var bool bClientHasInit;
@@ -117,17 +127,18 @@ simulated function OpenWindow()
 function TickedReplication_GameConfig(int Index, bool bDedicated)
 {
 	local VotingHandler.MapVoteGameConfigLite GameConfigItem;
-	local string Description,MapListStyle,MapListValue;
+	local string Description,MapListStyle,MapListValue,Difficulty;
 
 	GameConfigItem = VH.GetGameConfig(Index);
 	Description = KFVotingHandler(VH).GetGameConfigDescription(Index);
 	MapListStyle = KFVotingHandler(VH).GetGameConfigMapListStyle(Index);
 	MapListValue = KFVotingHandler(VH).GetGameConfigMapListValue(Index);
+	Difficulty = KFVotingHandler(VH).GetGameConfigDifficulty(Index);
 	DebugLog("___Sending " $ Index $ " - " $ GameConfigItem.GameName);
 
 	if( bDedicated )
 	{
-		ReceiveGameConfigRep(GameConfigItem, Description, MapListStyle, MapListValue); // replicate one GameConfig entry each tick.
+		ReceiveGameConfigRep(GameConfigItem, Description, MapListStyle, MapListValue, Difficulty); // replicate one GameConfig entry each tick.
 		bWaitingForReply = True;
 	}
 	else
@@ -136,6 +147,7 @@ function TickedReplication_GameConfig(int Index, bool bDedicated)
 		GameConfigDescriptions[GameConfigDescriptions.Length] = Description;
 		GameConfigMapListStyle[GameConfigMapListStyle.Length] = MapListStyle;
 		GameConfigMapListValue[GameConfigMapListValue.Length] = MapListValue;
+		GameConfigDifficulty[GameConfigDifficulty.Length] = Difficulty;
 	}
 }
 
@@ -171,12 +183,13 @@ simulated function ReceiveMapInfoRep( VotingHandler.MapVoteMapList MapInfo, KFVo
 // above - stores into GameConfig exactly like the base engine's own
 // ReceiveGameConfig() would, plus the extra Description text into
 // GameConfigDescriptions at the same (matching) index.
-simulated function ReceiveGameConfigRep( VotingHandler.MapVoteGameConfigLite p_GameConfig, string Description, string MapListStyle, string MapListValue )
+simulated function ReceiveGameConfigRep( VotingHandler.MapVoteGameConfigLite p_GameConfig, string Description, string MapListStyle, string MapListValue, string Difficulty )
 {
 	GameConfig[GameConfig.Length] = p_GameConfig;
 	GameConfigDescriptions[GameConfigDescriptions.Length] = Description;
 	GameConfigMapListStyle[GameConfigMapListStyle.Length] = MapListStyle;
 	GameConfigMapListValue[GameConfigMapListValue.Length] = MapListValue;
+	GameConfigDifficulty[GameConfigDifficulty.Length] = Difficulty;
 	ReplicationReply();
 }
 
