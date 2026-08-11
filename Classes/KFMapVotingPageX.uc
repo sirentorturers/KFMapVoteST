@@ -6,7 +6,9 @@ class KFMapVotingPageX extends ROMapVotingPage;
 var automated moEditBox SearchEdit;
 var automated moComboBox co_Difficulty;
 var automated GUILabel lbl_Description;
+var automated GUILabel lbl_MapListDownloading;
 var localized string strHelp;
+var localized string strDownloadingMapList;
 
 // Tracks the difficulty currently selected in co_Difficulty, so
 // OnDifficultyChanged() can tell whether a change actually happened and
@@ -21,8 +23,31 @@ var string CurrentDifficulty;
 // rarely changes.
 var string DifficultyOrder[4];
 
+// Pre-check mirroring XVoting.MapVotingPage.InternalOnOpen()'s own guard
+// (GameConfig.Length < GameConfigCount || MapList.Length < MapCount) - that
+// base-class guard, left untouched, pops a blocking "Map data download in
+// progress. Please try again later." modal with no retry when this
+// player's own VotingReplicationInfo hasn't finished catching up on its
+// per-tick GameConfig/MapList replication yet (see KFVotingReplicationInfo -
+// this has nothing to do with CacheManager or a real network download).
+// Intercepting here, before super.InternalOnOpen() ever runs, means that
+// guard is only ever reached once both arrays are already fully populated -
+// i.e. it always passes - so its dialog is only left reachable for the
+// genuine, non-transient "voting disabled" case (MVRI==none/!bMapVote),
+// which still falls through to super.InternalOnOpen() below unchanged.
 function InternalOnOpen()
 {
+	if( MVRI != none && MVRI.bMapVote &&
+		(MVRI.GameConfig.Length < MVRI.GameConfigCount || MVRI.MapList.Length < MVRI.MapCount) )
+	{
+		ShowMapListDownloading();
+		SetTimer(0.5, true);
+		return;
+	}
+
+	KillTimer();
+	HideMapListDownloading();
+
 	super.InternalOnOpen();
 
 	if (!bHasFocus) {
@@ -81,6 +106,44 @@ function InternalOnOpen()
 		SearchEdit.SetFocus(none);
 	}
 	f_Chat.ReceiveChat(strHelp);
+}
+
+// GUIComponent's own native timer (SetTimer/KillTimer/event Timer(), driven
+// per-frame by GUIPage::UpdateTimers() - unrelated to Actor.SetTimer, since
+// this class hierarchy is Object-rooted, not Actor-rooted) - polls until
+// this player's replication has caught up, then re-enters InternalOnOpen()
+// so the map/vote lists populate exactly like a normal already-ready open.
+event Timer()
+{
+	if( MVRI == none || !MVRI.bMapVote ||
+		(MVRI.GameConfig.Length >= MVRI.GameConfigCount && MVRI.MapList.Length >= MVRI.MapCount) )
+	{
+		KillTimer();
+		InternalOnOpen();
+	}
+	// else: still downloading - the repeating timer fires again on its own.
+}
+
+// Stops the poll timer if the page is closed while still waiting, so
+// Timer() can never fire (and call InternalOnOpen()) against an already-
+// freed page.
+function Free()
+{
+	KillTimer();
+	Super.Free();
+}
+
+final function ShowMapListDownloading()
+{
+	lb_MapListBox.SetVisibility(false);
+	lb_VoteCountListBox.SetVisibility(false);
+	lbl_MapListDownloading.Caption = strDownloadingMapList;
+	lbl_MapListDownloading.SetVisibility(true);
+}
+
+final function HideMapListDownloading()
+{
+	lbl_MapListDownloading.SetVisibility(false);
 }
 
 // Small helper - the currently selected GameConfig index, straight off the
@@ -711,6 +774,7 @@ DefaultProperties
 {
 	OnKeyEvent=InternalOnKeyEvent
 	strHelp=". TeamSay|/ Console command|+ Like the current map|- Dislike the current map| "
+	strDownloadingMapList="Downloading Map List, Please Wait for Refresh..."
 
 	DifficultyOrder(0)="Hard"
 	DifficultyOrder(1)="Suicidal"
@@ -833,6 +897,29 @@ DefaultProperties
 		OnDraw=AlignBK
 	End Object
 	i_MapListBackground=MapListBackground
+
+	// Covers the combined vote-count-list + map-list area (both go blank
+	// while waiting) - shown/hidden via ShowMapListDownloading()/
+	// HideMapListDownloading(). Styling mirrors KFMapVoteFooterX's
+	// MapPreviewNoneLabel ("No Preview Available"), this package's existing
+	// convention for a full-panel placeholder label.
+	Begin Object Class=GUILabel Name=MapListDownloadingLabel
+		Caption=""
+		TextAlign=TXTA_Center
+		VertAlign=TXTA_Center
+		TextColor=(B=255,G=255,R=255)
+		TextFont="UT2HeaderFont"
+		bTransparent=False
+		bMultiLine=True
+		bVisible=False
+		WinLeft=0.02
+		WinWidth=0.96
+		WinTop=0.05
+		WinHeight=0.65
+		bScaleToParent=True
+		bBoundToParent=True
+	End Object
+	lbl_MapListDownloading=MapListDownloadingLabel
 
 	Begin Object Class=KFMapVoteFooterX Name=ChatFooter
 		WinTop=0.705
