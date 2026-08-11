@@ -131,13 +131,22 @@ final function BuildGameConfig()
 
 	// Load every entry first so we can sort by SortOrder before copying
 	// into GameConfig (GameConfig's final index order is what the vote
-	// GUI and every stored vote index are keyed against).
+	// GUI and every stored vote index are keyed against). Disabled entries
+	// (bDisabled=true) are skipped here, before anything is copied into
+	// GameConfig - see KFGameConfigEntry.bDisabled. That means a disabled
+	// mode never occupies a GameConfig index at all, so nothing downstream
+	// needs to filter it out separately.
 	for( i=0; i<SectionNames.Length; i++ )
 	{
 		Entry = new(none, SectionNames[i]) class'KFGameConfigEntry';
 		if( Entry == none )
 		{
 			log("___BuildGameConfig: failed to load section '"$SectionNames[i]$"' - skipping.",'MapVote');
+			continue;
+		}
+		if( Entry.bDisabled )
+		{
+			log("___BuildGameConfig: '"$SectionNames[i]$"' is disabled - skipping.",'MapVote');
 			continue;
 		}
 		Entries[Entries.Length] = Entry;
@@ -208,7 +217,10 @@ final function KFGameConfigEntry FindEntryByID(array<KFGameConfigEntry> Entries,
 // points at (transitively, if that mode is itself a Copy). The loop is
 // capped at Entries.Length hops, so a cycle (A copies B copies A) or a
 // dangling/misspelled CopyMapList just falls through to the "All"/""
-// default below instead of hanging or crashing.
+// default below instead of hanging or crashing. Entries is the already-
+// filtered list BuildGameConfig() builds (bDisabled=true sections excluded -
+// see KFGameConfigEntry.bDisabled), so CopyMapList pointing at a disabled
+// mode's ID hits the same "not found" fallback as a dangling ID.
 final function ResolveMapList(array<KFGameConfigEntry> Entries, KFGameConfigEntry Entry, out string OutStyle, out string OutValue)
 {
 	local KFGameConfigEntry Current;

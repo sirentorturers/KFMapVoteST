@@ -78,8 +78,25 @@ var config array<string> AllowMap;
 var config array<string> ExcludeMap;
 var config string CopyMapList;
 
+// Optional kill-switch for a mode. Default false (mode behaves exactly as
+// before this field existed). Set true to hide this mode from the vote GUI
+// entirely without deleting/commenting out its section - useful for
+// temporarily pulling a mode without losing its config. Entries with
+// bDisabled=true are dropped in KFVotingHandler.BuildGameConfig() before
+// they ever reach the live GameConfig array, so nothing downstream (GUI
+// list, vote submission, IsMapValidForGameConfig, WebAdmin blocking) needs
+// to know this field exists - a disabled mode simply isn't there, same as
+// if its section had been deleted. Named bDisabled, not Disable - a real
+// ucc compile warning ('Disable' obscures 'Disable' defined in base class
+// 'Object') caught that Object already declares a native Disable(name)
+// function; same class of reserved-name collision as the Style/Actor.Style
+// lesson elsewhere in this package - verify against real compiler output,
+// don't assume a plain-English field name is free to use.
+var config bool bDisabled;
+
 defaultproperties
 {
 	SortOrder=0
 	MapListStyle="All"
+	bDisabled=false
 }
