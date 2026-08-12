@@ -37,6 +37,50 @@ it).
 - A `Maps/` folder (sibling of `System/`) with every map you want
   covered.
 
+## Single-map fast path
+
+Adding a preview for one new map, or refreshing one map's screenshot,
+doesn't need the full pool run below. From `System/`:
+
+```
+..\KFMapVoteST\Tools\Setup-SingleMapPreview.bat KF-SomeMap
+```
+
+This is a thin wrapper - it doesn't reimplement any pipeline logic, it
+just `call`s `Export-PreviewTextures.bat`/`Import-PreviewPackage.bat`
+unmodified (so neither of those needs retesting when this script changes)
+and calls `GenerateMapPreviewsCommandlet` with the map name as its
+(now-optional) `Parms` argument to scope step 2 below to just that one
+map. It still pauses partway through for the manual Mac-side
+`compress_previews.sh` step (step 3b below), same as the bulk pipeline -
+there's no way around that machine hop for either path.
+
+Two things worth knowing before reaching for this:
+
+- **It deletes `KFMapVoteSTPreviewManifest.ini` first.** That file merges
+  new writes in but never prunes stale sections (see step 2's "Excluding
+  a map" note below for the same behavior) - without clearing it, any
+  other map's leftover manifest entries from an earlier run would still
+  be there, and `Export-PreviewTextures.bat` (which has no per-map
+  awareness of its own - it just processes whatever the manifest
+  contains) would silently re-export/re-stage all of them too, turning a
+  single-map run back into a full bulk run. Nothing in
+  `KFMapVotePreviews.ini` is affected by this delete.
+- **It imports into the SAME shared `KFMapVoteST_Previews.utx`** every
+  map's preview already lives in - not a separate per-map package. That
+  means every single-map run is exactly the "repeated `ucc.exe` call
+  against an already-populated package" scenario step 3c below warns
+  against. The script backs up the package to `KFMapVoteST_Previews.utx.bak`
+  first as a cheap safety net, but **you still need to open the package
+  afterward and spot-check a couple of unrelated maps' previews**, not
+  just the one you just updated - the backup is the actual rollback path
+  if anything looks wrong, not just the script's own pass/fail message.
+
+Use the full pipeline below instead for a from-scratch build, or when
+touching more than a handful of maps at once - `Import-PreviewPackage.bat`
+is only really safe to run once per "fresh package" cycle, so many small
+single-map runs in a row each carry the risk above independently.
+
 ## Step by step
 
 ### 1. Keep the map list current

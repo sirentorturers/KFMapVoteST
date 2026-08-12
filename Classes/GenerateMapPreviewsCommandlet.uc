@@ -93,13 +93,26 @@ event int Main(string Parms)
 	local KFPreviewFrameEntry FrameEntry;
 	local int i, j, WrittenCount, ChecklistCount, SkippedCount, ExcludedCount;
 	local array<Texture> Frames;
-	local string FrameList, Status, FullRef, RelRef, MapPrefix;
+	local string FrameList, Status, FullRef, RelRef, MapPrefix, TargetMap;
+
+	// Optional single-map scope, passed as Parms (e.g.
+	// "ucc KFMapVoteST.GenerateMapPreviewsCommandlet KF-SomeMap") - see
+	// Tools/Setup-SingleMapPreview.bat. Empty Parms (the bulk-run
+	// invocation above) leaves every check below a no-op, so bulk
+	// behavior is unchanged.
+	TargetMap = Parms;
 
 	MapNames = GetPerObjectNames("KFMapVoteSTMapList", "MapListEntry", 1024);
-	log("GenerateMapPreviews: found "$MapNames.Length$" maps listed in KFMapVoteSTMapList.ini (regenerate via generate_map_list.sh if this looks stale).");
+	if (TargetMap != "")
+		log("GenerateMapPreviews: found "$MapNames.Length$" maps listed in KFMapVoteSTMapList.ini - scoped to single map '"$TargetMap$"' (regenerate via generate_map_list.sh if this looks stale).");
+	else
+		log("GenerateMapPreviews: found "$MapNames.Length$" maps listed in KFMapVoteSTMapList.ini (regenerate via generate_map_list.sh if this looks stale).");
 
 	for (i = 0; i < MapNames.Length; i++)
 	{
+		if (TargetMap != "" && MapNames[i] != TargetMap)
+			continue;
+
 		// LevelSummary is always named exactly "<MapPackage>.LevelSummary"
 		// at package root (no numeric suffix, confirmed via a real t3d
 		// export showing Summary=LevelSummary'myLevel.LevelSummary') -
@@ -128,7 +141,12 @@ event int Main(string Parms)
 		Entry.SaveConfig();
 		WrittenCount++;
 
-		if (Entry.TextureRef == "" && Summary.Screenshot != None)
+		// The TextureRef=="" gate normally skips a map that's already been
+		// through the pipeline once. When TargetMap explicitly names this
+		// map, that gate is bypassed so a re-run can refresh an
+		// already-textured map's manifest entry too (Setup-SingleMapPreview.bat's
+		// "refresh" case), not just cover brand-new maps.
+		if ((TargetMap != "" || Entry.TextureRef == "") && Summary.Screenshot != None)
 		{
 			if (IsMapExcluded(MapNames[i]))
 			{
@@ -365,7 +383,7 @@ function bool IsMapExcluded(string MapName)
 defaultproperties
 {
 	HelpCmd="GenerateMapPreviews"
-	HelpOneLiner="Scaffolds KFMapVotePreviews.ini (Author/PlayerCount) and writes KFMapVoteSTPreviewManifest.ini for the texture export/import pipeline."
-	HelpUsage="ucc GenerateMapPreviews"
+	HelpOneLiner="Scaffolds KFMapVotePreviews.ini (Author/PlayerCount) and writes KFMapVoteSTPreviewManifest.ini for the texture export/import pipeline. Optional MapName arg scopes the run to just that one map (see Tools/Setup-SingleMapPreview.bat)."
+	HelpUsage="ucc GenerateMapPreviews [MapName]"
 	LogToStdout=true
 }
