@@ -360,6 +360,8 @@ final function string DeriveDifficulty(string GameName)
 	if( EndsWithWord(GameName, "Hell on Earth") ) return "Hell on Earth";
 	if( EndsWithWord(GameName, "Suicidal") )      return "Suicidal";
 	if( EndsWithWord(GameName, "Brutal") )        return "Brutal";
+	if( EndsWithWord(GameName, "Beginner") )      return "Beginner";
+	if( EndsWithWord(GameName, "Normal") )        return "Normal";
 	if( EndsWithWord(GameName, "Hard") )          return "Hard";
 	if( EndsWithWord(GameName, "HoE") )           return "Hell on Earth";
 	if( EndsWithWord(GameName, "Sui") )           return "Suicidal";

@@ -47,7 +47,7 @@ var bool bSuppressComboEvents;
 // KFVotingHandler.DeriveDifficulty()'s comments and CLAUDE.md's
 // replication gotchas). Not worth the risk for a ~4-item list that rarely
 // changes.
-var string DifficultyOrder[4];
+var string DifficultyOrder[6];
 
 // Pre-check mirroring XVoting.MapVotingPage.InternalOnOpen()'s own guard
 // (GameConfig.Length < GameConfigCount || MapList.Length < MapCount) - that
@@ -510,6 +510,8 @@ final function string DeriveModeGroup(string GameName)
 	if( EndsWithWord(Remainder, "Hell on Earth") )    Remainder = Left(Remainder, Len(Remainder)-Len("Hell on Earth"));
 	else if( EndsWithWord(Remainder, "Suicidal") )    Remainder = Left(Remainder, Len(Remainder)-Len("Suicidal"));
 	else if( EndsWithWord(Remainder, "Brutal") )      Remainder = Left(Remainder, Len(Remainder)-Len("Brutal"));
+	else if( EndsWithWord(Remainder, "Beginner") )    Remainder = Left(Remainder, Len(Remainder)-Len("Beginner"));
+	else if( EndsWithWord(Remainder, "Normal") )      Remainder = Left(Remainder, Len(Remainder)-Len("Normal"));
 	else if( EndsWithWord(Remainder, "Hard") )        Remainder = Left(Remainder, Len(Remainder)-Len("Hard"));
 	else if( EndsWithWord(Remainder, "HoE") )         Remainder = Left(Remainder, Len(Remainder)-Len("HoE"));
 	else if( EndsWithWord(Remainder, "Sui") )         Remainder = Left(Remainder, Len(Remainder)-Len("Sui"));
@@ -864,10 +866,12 @@ DefaultProperties
 	strHelp=". TeamSay|/ Console command|+ Like the current map|- Dislike the current map| "
 	strDownloadingMapList="Downloading Map List, Please Wait for Refresh..."
 
-	DifficultyOrder(0)="Hard"
-	DifficultyOrder(1)="Suicidal"
-	DifficultyOrder(2)="Hell on Earth"
-	DifficultyOrder(3)="Brutal"
+	DifficultyOrder(0)="Beginner"
+	DifficultyOrder(1)="Normal"
+	DifficultyOrder(2)="Hard"
+	DifficultyOrder(3)="Suicidal"
+	DifficultyOrder(4)="Hell on Earth"
+	DifficultyOrder(5)="Brutal"
 
 	Begin Object Class=MVCountColumnListBox Name=VoteCountListBox
 		TabOrder=0
