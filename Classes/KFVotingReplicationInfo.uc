@@ -58,14 +58,42 @@ var bool bShowMapLike;
 // history with new replicated properties (see CLAUDE.md).
 var float PreviewAnimFrameRate;
 
+// Client-side mirrors of KFVotingHandler.CustomDifficulty1/2/3 - global/
+// server-wide settings, not per-GameConfig-entry data, so these ride the
+// same bNetInitial scalar block bShowMapLike/PreviewAnimFrameRate already
+// use, not the per-item GameConfig RPC. Needed client-side only by
+// KFMapVotingPageX.DeriveModeGroup()/MatchCustomDifficultyLabel() - the
+// per-entry resolved difficulty value itself (GameConfigDifficulty)
+// already replicates per-item via ReceiveGameConfigRep() and needs no
+// changes for this feature.
+var string CustomDifficulty1;
+var string CustomDifficulty2;
+var string CustomDifficulty3;
+
+// Client-side mirror of KFVotingHandler.ZedVoteNames/ZedVoteStates -
+// unlike MapPreviewList/GameConfigDescriptions above, this data can change
+// value at an already-delivered index (a zed vote resolving mid-map), which
+// the base engine's per-item "deliver index 0..Count-1 once" catch-up
+// machinery (TickedReplication_MapList/GameConfig) has no facility for -
+// so this pair is a plain on-demand request/response RPC round trip
+// instead, driven by KFMapVotingPageX when the zed panel actually needs to
+// show something, not a continuous background sync. Both a client-facing
+// request that only ever executes server-side once network-routed
+// (RequestZedVoteRefresh, same shape as SendMapRepVote below) and a
+// server-facing response that only ever executes client-side
+// (ReceiveZedVoteRep, same shape as ReceiveMapInfoRep/ReceiveGameConfigRep
+// above) - not a new bulk-replicated property in either direction.
+var array<string> ZedVoteNames;
+var array<byte> ZedVoteStates;
+
 replication
 {
 	reliable if( Role==ROLE_Authority && bNetInitial )
-		bShowMapLike, PreviewAnimFrameRate;
+		bShowMapLike, PreviewAnimFrameRate, CustomDifficulty1, CustomDifficulty2, CustomDifficulty3;
 	reliable if( Role==ROLE_Authority )
-		ReceiveMapInfoRep, ReceiveGameConfigRep;
+		ReceiveMapInfoRep, ReceiveGameConfigRep, ReceiveZedVoteRep;
 	reliable if( Role<ROLE_Authority )
-		SendMapRepVote;
+		SendMapRepVote, RequestZedVoteRefresh;
 }
 
 simulated final function InitClient()
@@ -251,6 +279,34 @@ simulated function bool SetMapLike(bool bLiked)
 
 function SendMapRepVote(byte value) {
 	MapRepVote = value;
+}
+
+// Called BY the client (see KFMapVotingPageX) - routed to the server by
+// the "Role<ROLE_Authority" replication statement above, same as
+// SetMapLike()/SendMapRepVote() already do. Not simulated, so the body
+// only actually runs server-side.
+function RequestZedVoteRefresh()
+{
+	local KFVotingHandler KVH;
+
+	KVH = KFVotingHandler(VH);
+	if ( KVH == none )
+		return;
+
+	KVH.RefreshZedVotes();
+	ReceiveZedVoteRep(KVH.ZedVoteNames, KVH.ZedVoteStates);
+}
+
+// Server-authoritative response to RequestZedVoteRefresh() above - routed
+// to the requesting client by the "Role==ROLE_Authority" replication
+// statement above, same as ReceiveMapInfoRep/ReceiveGameConfigRep. Simply
+// overwrites the client mirror rather than appending, since (unlike
+// MapList/GameConfig) this snapshot can legitimately shrink or change
+// values between requests.
+simulated function ReceiveZedVoteRep( array<string> Names, array<byte> States )
+{
+	ZedVoteNames = Names;
+	ZedVoteStates = States;
 }
 
 

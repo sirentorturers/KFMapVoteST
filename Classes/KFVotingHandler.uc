@@ -48,6 +48,18 @@ var config bool bSpectatorsCanVote;
 // below and KFVotingReplicationInfo.PreviewAnimFrameRate).
 var config float PreviewAnimFrameRate;
 
+// Admin-configurable "Custom" difficulty slots (KFMapVote.ini). Blank
+// (default) = unused, matching Description's "blank means off" convention.
+// Each slot's value is BOTH the recognized trailing suffix word/phrase in
+// a mode's GameName AND the exact text shown/selected in the difficulty
+// dropdown - e.g. CustomDifficulty1="Zed Rush" makes a KFMapVoteModes.ini
+// entry with GameName="MyMode Zed Rush" resolve to difficulty "Zed Rush"
+// directly (see DeriveDifficulty()/MatchCustomDifficulty() below) - there
+// is no separate fixed literal token admins type into GameName.
+var config string CustomDifficulty1;
+var config string CustomDifficulty2;
+var config string CustomDifficulty3;
+
 struct FMapRepType
 {
 	var int Positive,Negative;
@@ -116,6 +128,24 @@ var array<string> GameConfigDifficulty;
 // settimer(1,true) calls elsewhere in this file that drive the actual
 // vote cycle once voting opens (those all happen well after level start).
 var bool bPendingCurrentGameConfigCheck;
+
+// Server-side snapshot of the currently loaded map's zed-vote roster
+// (index-matched parallel arrays, same convention as
+// GameConfigDescriptions/GameConfigDifficulty above), rebuilt on demand by
+// RefreshZedVotes() below from whatever KFZedVoteEntry PerObjectConfig
+// sections currently exist - written by ScrnBalanceST.ScrnZedVoting.
+// PublishZedVoteStates() if that mod is installed, otherwise
+// GetPerObjectNames() just finds nothing and these stay empty. Not kept
+// continuously fresh by a timer - this handler's single shared Timer()
+// already juggles several unrelated cadences (see
+// bPendingCurrentGameConfigCheck above and the difficulty-remember-fix
+// session's lesson about not adding a second competing SetTimer() call),
+// so refresh is instead driven on demand from the client side
+// (KFVotingReplicationInfo.RequestZedVoteRefresh(), called by
+// KFMapVotingPageX when the zed panel actually needs to show something)
+// rather than an ambient background poll.
+var array<string> ZedVoteNames;
+var array<byte> ZedVoteStates;
 
 // ------------------------------------------------------------------
 // Comparator for BuildGameConfig()'s sort pass: numbered entries
@@ -355,8 +385,36 @@ final function bool EndsWithWord(string Text, string Suffix)
 // once here, server-side, in BuildGameConfig(), and replicated directly
 // (see GameConfigDifficulty above) instead of every client re-deriving
 // its own answer from GameName text.
+// Checks GameName against the 3 admin-configured custom difficulty labels
+// (CustomDifficulty1/2/3 above), longest first - so a shorter custom label
+// that also happens to be a valid trailing word of a longer one (e.g.
+// "Rush" inside "Zed Rush") can't shadow the more specific match. Same
+// "sort candidate patterns by length descending" convention already used
+// elsewhere in this package (see CLAUDE.md's Working Conventions). Manual
+// 3-way compare/swap rather than a generic sort - only 3 elements, and
+// array.Find()/generic sort helpers aren't available in this SDK anyway.
+final function bool MatchCustomDifficulty(string GameName, out string Matched)
+{
+	local string L1, L2, L3, Tmp;
+
+	L1 = CustomDifficulty1;
+	L2 = CustomDifficulty2;
+	L3 = CustomDifficulty3;
+
+	if( Len(L2) > Len(L1) ) { Tmp=L1; L1=L2; L2=Tmp; }
+	if( Len(L3) > Len(L1) ) { Tmp=L1; L1=L3; L3=Tmp; }
+	if( Len(L3) > Len(L2) ) { Tmp=L2; L2=L3; L3=Tmp; }
+
+	if( L1 != "" && EndsWithWord(GameName, L1) ) { Matched = L1; return true; }
+	if( L2 != "" && EndsWithWord(GameName, L2) ) { Matched = L2; return true; }
+	if( L3 != "" && EndsWithWord(GameName, L3) ) { Matched = L3; return true; }
+	return false;
+}
+
 final function string DeriveDifficulty(string GameName)
 {
+	local string CustomMatch;
+
 	if( EndsWithWord(GameName, "Hell on Earth") ) return "Hell on Earth";
 	if( EndsWithWord(GameName, "Suicidal") )      return "Suicidal";
 	if( EndsWithWord(GameName, "Brutal") )        return "Brutal";
@@ -365,6 +423,12 @@ final function string DeriveDifficulty(string GameName)
 	if( EndsWithWord(GameName, "Hard") )          return "Hard";
 	if( EndsWithWord(GameName, "HoE") )           return "Hell on Earth";
 	if( EndsWithWord(GameName, "Sui") )           return "Suicidal";
+
+	// Admin-configurable Custom1-3 slots - checked last so a custom label
+	// can never shadow a reserved built-in word.
+	if( MatchCustomDifficulty(GameName, CustomMatch) )
+		return CustomMatch;
+
 	return "";
 }
 
@@ -1026,7 +1090,33 @@ function AddMapVoteReplicationInfo(PlayerController Player)
 	M.PlayerID = Player.PlayerReplicationInfo.PlayerID;
 	M.bShowMapLike = bShowMapLike;
 	M.PreviewAnimFrameRate = PreviewAnimFrameRate;
+	M.CustomDifficulty1 = CustomDifficulty1;
+	M.CustomDifficulty2 = CustomDifficulty2;
+	M.CustomDifficulty3 = CustomDifficulty3;
 	MVRI[MVRI.Length] = M;
+}
+
+// Rebuilds ZedVoteNames/ZedVoteStates from whatever KFZedVoteEntry
+// PerObjectConfig sections currently exist in KFMapVoteSTZedVotes.ini -
+// see that class and ScrnBalanceST.ScrnZedVoting.PublishZedVoteStates()
+// for the write side. Called on demand (see ZedVoteNames/ZedVoteStates'
+// declaration above for why this isn't timer-driven) from
+// KFVotingReplicationInfo.RequestZedVoteRefresh().
+function RefreshZedVotes()
+{
+	local array<string> SectionNames;
+	local KFZedVoteEntry Entry;
+	local int i;
+
+	SectionNames = GetPerObjectNames("KFMapVoteSTZedVotes", "KFZedVoteEntry", 1024);
+
+	ZedVoteNames.Length = 0;
+	ZedVoteStates.Length = 0;
+	for ( i = 0; i < SectionNames.Length; ++i ) {
+		Entry = new(none, SectionNames[i]) class'KFZedVoteEntry';
+		ZedVoteNames[ZedVoteNames.Length] = SectionNames[i];
+		ZedVoteStates[ZedVoteStates.Length] = Entry.State;
+	}
 }
 
 function Timer()

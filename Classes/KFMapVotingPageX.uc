@@ -153,6 +153,13 @@ function InternalOnOpen()
 	// subsequent mode/difficulty change.
 	UpdateDescriptionLabel(CurrentGameConfig());
 
+	// The preview panel otherwise never gets an initial image/author/player-
+	// count for whatever map happens to be selected when the vote menu
+	// first opens - MapListClick() only ever fires from here on, in
+	// response to an actual selection change. Same UpdateMapPreviewForSelection()
+	// used by MapListClick()/NotifySelectionChanged() below.
+	UpdateMapPreviewForSelection(lb_MapListBox.List);
+
 	if (f_Chat.ed_Chat.GetText() != "") {
 		f_Chat.ed_Chat.SetFocus(none);
 		SetFocus(f_Chat.ed_Chat);
@@ -212,19 +219,19 @@ final function int CurrentGameConfig()
 	return int(co_GameType.GetExtra());
 }
 
-// Single-click handler inherited from XVoting.MapVotingPage, already wired
-// as OnClick for both lb_VoteCountListBox and lb_MapListBox in
-// MapVotingPage.InternalOnOpen(). Overridden here purely to also drive the
-// inline map preview panel (image + author + player count) in the footer -
-// preserves the base selection/highlight behavior via Super first.
-function bool MapListClick(GUIComponent Sender)
+// Resolves whichever map is currently selected in Sender (either list) and
+// drives the inline map preview panel (image + author + player count) in
+// the footer. Factored out of MapListClick() so it can also be called from
+// MVMultiColumnList/MVCountColumnList's new OnChange handler
+// (NotifySelectionChanged) - that delegate fires for every reason a list's
+// selection can change (click, arrow keys, our own new W/S handling,
+// ApplyFilter()'s auto-select), not just an explicit mouse click, so the
+// preview now stays in sync no matter how the player is navigating.
+final function UpdateMapPreviewForSelection(GUIComponent Sender)
 {
-	local bool bResult;
 	local string MapName;
 	local int MapIndex;
 	local KFVotingHandler.FMapPreviewData PreviewOverride;
-
-	bResult = Super.MapListClick(Sender);
 
 	if( Sender == lb_VoteCountListBox.List )
 		MapIndex = MapVoteCountMultiColumnList(Sender).GetSelectedMapIndex();
@@ -253,16 +260,41 @@ function bool MapListClick(GUIComponent Sender)
 	// explicit downcast is required (base-typed refs don't expose
 	// subclass-only members in this engine).
 	KFMapVoteFooterX(f_Chat).UpdateMapPreview(MapName, PreviewOverride);
+}
 
+// Single-click handler inherited from XVoting.MapVotingPage, already wired
+// as OnClick for both lb_VoteCountListBox and lb_MapListBox in
+// MapVotingPage.InternalOnOpen(). Still updates the preview directly here
+// (via UpdateMapPreviewForSelection() above) even though an ordinary click
+// also flows through SetIndex() -> the new OnChange wiring on
+// MVMultiColumnList/MVCountColumnList, making this call redundant on the
+// click path specifically - kept anyway as defense-in-depth so preview
+// updates don't depend entirely on that new wiring being correct.
+function bool MapListClick(GUIComponent Sender)
+{
+	local bool bResult;
+
+	bResult = Super.MapListClick(Sender);
+	UpdateMapPreviewForSelection(Sender);
 	return bResult;
 }
 
 // Also allow admins force mapswitch.
+//
+// Sender here is always the ListBox WRAPPER itself (self, passed from
+// MVMultiColumnListBox.InternalOnClick/MVCountColumnListBox.InternalOnClick's
+// case 2 - the only call site this function has), never .List - so the
+// branch below used to compare Sender against lb_VoteCountListBox.List,
+// which a wrapper can never equal, meaning this function always fell into
+// the else (top map-list panel) branch regardless of which panel was
+// actually right-clicked. Inert for the top panel (the else branch happens
+// to be correct there), but silently broke force-switching from the bottom
+// vote-count panel. Fixed by comparing against the wrapper itself.
 final function SendAdminSwitch(GUIComponent Sender)
 {
 	local int MapIndex,GameConfigIndex;
 
-	if( Sender == lb_VoteCountListBox.List )
+	if( Sender == lb_VoteCountListBox )
 	{
 		MapIndex = MapVoteCountMultiColumnList(lb_VoteCountListBox.List).GetSelectedMapIndex();
 		if( MapIndex>=0 )
@@ -275,15 +307,36 @@ final function SendAdminSwitch(GUIComponent Sender)
 			GameConfigIndex = int(co_GameType.GetExtra());
 	}
 	if( MapIndex>=0 )
+	{
+		log("STVoteDiag: SendAdminSwitch Sender="$Sender$" MapIndex="$MapIndex
+			$" GameConfigIndex="$GameConfigIndex,'STVoteDiag');
 		MVRI.SendMapVote(MapIndex,-(GameConfigIndex+1)); // Send with negative game index to indicate admin switch.
+	}
 }
 
 // Allow admins vote like all other players.
+//
+// Unlike SendAdminSwitch(), this function has FOUR real call sites with
+// two different Sender "shapes": the base engine's MapVotingPage.Submit()
+// (SendVote(LastClickedList), where LastClickedList was captured by
+// MapListClick() as the .List component itself) and MapListDblClick()
+// (SendVote(Sender), also .List) both pass the inner List; this mod's own
+// OnSearchKey() (SendVote(lb_MapListBox.List)) also passes .List;
+// MVMultiColumnListBox/MVCountColumnListBox's own InternalOnClick case 0
+// ("Vote for this Map" from the right-click context menu) passes the
+// ListBox WRAPPER itself (self). A single-form comparison can't
+// discriminate top-vs-bottom panel correctly for both shapes at once - the
+// original lb_VoteCountListBox.List check got the .List-shaped call sites
+// right but (like SendAdminSwitch()) always missed the wrapper-shaped one;
+// naively swapping to compare only against the wrapper (as SendAdminSwitch()
+// does, safe there since it has only that one call site) would have instead
+// broken the .List-shaped call sites. Checking against both forms handles
+// every real caller correctly.
 function SendVote(GUIComponent Sender)
 {
 	local int MapIndex,GameConfigIndex;
 
-	if( Sender == lb_VoteCountListBox.List )
+	if( Sender == lb_VoteCountListBox || Sender == lb_VoteCountListBox.List )
 	{
 		MapIndex = MapVoteCountMultiColumnList(lb_VoteCountListBox.List).GetSelectedMapIndex();
 		if( MapIndex>=0 )
@@ -298,7 +351,11 @@ function SendVote(GUIComponent Sender)
 	if( MapIndex>=0 )
 	{
 		if( MVRI.MapList[MapIndex].bEnabled )
+		{
+			log("STVoteDiag: SendVote Sender="$Sender$" MapIndex="$MapIndex
+				$" GameConfigIndex="$GameConfigIndex,'STVoteDiag');
 			MVRI.SendMapVote(MapIndex,GameConfigIndex);
+		}
 		else PlayerOwner().ClientMessage(lmsgMapDisabled);
 	}
 }
@@ -489,6 +546,39 @@ final function bool EndsWithWord(string Text, string Suffix)
 	return false;
 }
 
+// Client-side twin of KFVotingHandler.MatchCustomDifficulty() - checks
+// GameName against the 3 admin-configured custom difficulty labels
+// (KFMapVote.ini, replicated via KFVotingReplicationInfo.CustomDifficulty1/
+// 2/3), longest-first so a shorter label can't shadow a longer one that
+// happens to end the same way. Duplicated rather than shared - same
+// convention this file already uses for RANDOM_MAP_NAME/EndsWithWord()
+// between client and server, since no shared base class spans both. Only
+// needed by DeriveModeGroup() below - the resolved difficulty value itself
+// (GameConfigDifficulty) already replicates per-entry from the server's own
+// DeriveDifficulty(), so nothing else client-side needs this.
+final function bool MatchCustomDifficultyLabel(string GameName, out string Matched)
+{
+	local KFVotingReplicationInfo KFMVRI;
+	local string L1, L2, L3, Tmp;
+
+	KFMVRI = KFVotingReplicationInfo(MVRI);
+	if( KFMVRI == none )
+		return false;
+
+	L1 = KFMVRI.CustomDifficulty1;
+	L2 = KFMVRI.CustomDifficulty2;
+	L3 = KFMVRI.CustomDifficulty3;
+
+	if( Len(L2) > Len(L1) ) { Tmp=L1; L1=L2; L2=Tmp; }
+	if( Len(L3) > Len(L1) ) { Tmp=L1; L1=L3; L3=Tmp; }
+	if( Len(L3) > Len(L2) ) { Tmp=L2; L2=L3; L3=Tmp; }
+
+	if( L1 != "" && EndsWithWord(GameName, L1) ) { Matched = L1; return true; }
+	if( L2 != "" && EndsWithWord(GameName, L2) ) { Matched = L2; return true; }
+	if( L3 != "" && EndsWithWord(GameName, L3) ) { Matched = L3; return true; }
+	return false;
+}
+
 // Strips a leading "NN. " index (e.g. "00. Standard: Hard") and a
 // trailing recognized difficulty word/phrase, leaving the shared "mode
 // family" name - e.g. "00. Standard: Hard" -> "Standard", "Chocolate
@@ -498,7 +588,7 @@ final function bool EndsWithWord(string Text, string Suffix)
 // difficulty filter.
 final function string DeriveModeGroup(string GameName)
 {
-	local string Remainder;
+	local string Remainder, CustomMatch;
 	local int i, DigitEnd;
 
 	Remainder = GameName;
@@ -515,6 +605,8 @@ final function string DeriveModeGroup(string GameName)
 	else if( EndsWithWord(Remainder, "Hard") )        Remainder = Left(Remainder, Len(Remainder)-Len("Hard"));
 	else if( EndsWithWord(Remainder, "HoE") )         Remainder = Left(Remainder, Len(Remainder)-Len("HoE"));
 	else if( EndsWithWord(Remainder, "Sui") )         Remainder = Left(Remainder, Len(Remainder)-Len("Sui"));
+	else if( MatchCustomDifficultyLabel(Remainder, CustomMatch) )
+		Remainder = Left(Remainder, Len(Remainder)-Len(CustomMatch));
 
 	// Trim trailing whitespace, then a single trailing ':' left over from
 	// e.g. "Faster Floor: Hard" -> "Faster Floor: " -> "Faster Floor:"

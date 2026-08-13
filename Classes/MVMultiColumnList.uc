@@ -7,6 +7,13 @@ var array<int> UnfilteredData;
 var string OldFilter;
 var eFontScale MyFontScale;  // soomebody is messing up with the self.FontScale
 
+// W/S/Up/Down held-repeat state - see InternalOnKeyEvent()/Timer() below.
+// RepeatNavKey is only meaningful while bRepeatNavActive is true.
+var bool bRepeatNavActive;
+var Interactions.EInputKey RepeatNavKey;
+var float RepeatNavInitialDelay;
+var float RepeatNavInterval;
+
 // Must match KFVotingHandler.RANDOM_MAP_NAME exactly (server-side source of
 // truth) - duplicated here since no shared base class conveniently spans
 // client and server; same duplication convention this file already uses for
@@ -56,6 +63,17 @@ function LoadList(VotingReplicationInfo LoadVRI, int GameTypeIndex)
 	local array<string> PrefixList,SkipList,ModeMapList;
 	local string A,B,MP,MapListStyle;
 	local KFVotingReplicationInfo KFVRI;
+
+	// Suppresses OnChange (NotifySelectionChanged, see below) while
+	// AddedItem() bulk-populates this list - GUIListBase.bInitializeList
+	// ("set index to 0 when adding first item") can silently auto-select
+	// during this loop and fire a premature selection-change notification
+	// before PageOwner is even valid yet (this object isn't attached to the
+	// component tree until after LoadList() returns - see
+	// MVMultiColumnListBox.LoadList()). bNotify is the engine's own native
+	// suppression mechanism (already used internally by SilentSetIndex()),
+	// reused here rather than inventing a new flag.
+	bNotify = False;
 
 	VRI = LoadVRI;
 	KFVRI = KFVotingReplicationInfo(VRI); // base VotingReplicationInfo doesn't expose the MapListStyle/Value mirrors below
@@ -120,6 +138,158 @@ function LoadList(VotingReplicationInfo LoadVRI, int GameTypeIndex)
 	MapVoteData = UnfilteredData;
 	OldFilter = "";
 	OnDrawItem  = DrawItem;
+	bNotify = True;
+}
+
+// Fires on every real selection-change reason - mouse click (via
+// GUIVertList's own InternalOnClick), keyboard Up/Down/Home/End/PgUp/PgDn
+// (via GUIListBase's inherited InternalOnKeyEvent), our own new W/S
+// handling below, and ApplyFilter()'s own Home() call - since all of them
+// ultimately call SetIndex(), which always fires OnChange. Bound via
+// defaultproperties (OnChange=NotifySelectionChanged) rather than a one-time
+// runtime List.OnChange=... assignment in the page, since
+// MVMultiColumnListBox.LoadList() constructs a brand NEW MVMultiColumnList
+// instance per game mode (new class'MVMultiColumnList') on every mode
+// switch - only a defaultproperties binding applies automatically to every
+// one of those. PageOwner (not MenuOwner - that resolves to the ListBox
+// wrapper one level up from here) is the accessor that reaches the actual
+// GUIPage from a component at this nesting depth.
+function NotifySelectionChanged(GUIComponent Sender)
+{
+	if( KFMapVotingPageX(PageOwner) != none )
+		KFMapVotingPageX(PageOwner).UpdateMapPreviewForSelection(self);
+}
+
+// Steps one item in NavKey's direction. IK_Down's !Controller.ShiftPressed
+// guard mirrors GUIListBase's own "case IK_Down" (Shift+Down is reserved
+// elsewhere in the engine for multi-select range-extension) - applied to
+// IK_S too for consistency, even though this list is single-select in
+// practice, rather than silently dropping the guard for the new key.
+final function bool StepNav(Interactions.EInputKey NavKey)
+{
+	if( NavKey == IK_W || NavKey == IK_Up )
+		return Up();
+	if( (NavKey == IK_S || NavKey == IK_Down) && !Controller.ShiftPressed )
+		return Down();
+	return false;
+}
+
+// W/S mirror the existing Up/Down arrow-key navigation - deliberately W/S
+// only, per design decision: A/D are left unbound since this list type has
+// no meaningful Left/Right behavior. Arrow-key Up/Down are now handled
+// directly here too (via StepNav() above), rather than deferred to
+// GUIListBase's own IK_Up/IK_Down case, so both old and new keys get
+// identical repeat-scroll behavior below.
+//
+// A press steps one item immediately (preserves the existing snappy
+// single-press feel), then - if the SAME key is still held past
+// RepeatNavInitialDelay - a controlled continuous auto-scroll engages at
+// RepeatNavInterval (~0.15s/item by default, covers a ~200-map list in
+// about 30 seconds), driven by this component's own native
+// SetTimer()/Timer() rather than by however many discrete IST_Press events
+// the OS's own keyboard auto-repeat happens to redeliver while held - that
+// native repeat timing/delivery isn't something this SDK's UI code ever
+// relies on anywhere (confirmed nowhere in this package or the reference
+// SDK checks for IST_Hold in an OnKeyEvent handler), so betting the exact
+// requested pacing on it would be exactly the kind of unverified native-
+// behavior assumption this project's history has repeatedly warned
+// against. A repeated Press for a key already being tracked as held is
+// therefore treated as (possible) OS auto-repeat noise and ignored, so it
+// can't keep restarting RepeatNavInitialDelay and starve the controlled
+// continuous rate from ever engaging. This component's own SetTimer/
+// KillTimer is already implicitly relied on for this exact class by the
+// engine itself - MapVoteMultiColumnListBox.InitBaseList() explicitly
+// calls List.SetTimer(0.0, False) before swapping a List out on a
+// game-type change, precisely so a still-pending timer like this one
+// doesn't fire against an abandoned list.
+//
+// Falls through to Super for every other key (Left/Right/Home/End/PgUp/
+// PgDn/MouseWheel/Ctrl+A), so nothing else is affected. Because this is a
+// scoped per-component key-event delegate (not global input), it
+// structurally never fires while SearchEdit/f_Chat.ed_Chat have focus -
+// they have their own independently-wired OnKeyEvent delegates.
+function bool InternalOnKeyEvent(out byte Key, out byte KeyState, float Delta)
+{
+	local Interactions.EInputKey iKey;
+
+	iKey = EInputKey(Key);
+
+	if( iKey == IK_W || iKey == IK_S || iKey == IK_Up || iKey == IK_Down )
+	{
+		if( KeyState == 1 )   // IST_Press
+		{
+			if( bRepeatNavActive && iKey == RepeatNavKey )
+				return true; // likely OS auto-repeat for a key we're already driving - ignore
+
+			StepNav(iKey);
+			bRepeatNavActive = true;
+			RepeatNavKey = iKey;
+			SetTimer(RepeatNavInitialDelay, false);
+			return true;
+		}
+		if( KeyState == 3 && iKey == RepeatNavKey ) // IST_Release
+		{
+			bRepeatNavActive = false;
+			KillTimer();
+			return false;
+		}
+	}
+
+	return Super.InternalOnKeyEvent(Key, KeyState, Delta);
+}
+
+// Drives the continuous-scroll phase of the W/S/Up/Down repeat described
+// above - re-arms itself every RepeatNavInterval for as long as
+// bRepeatNavActive stays true (cleared by InternalOnKeyEvent() on
+// release). Falls back to the inherited default (OnTimer delegate) if this
+// timer ever fires while a repeat isn't actually active - shouldn't
+// happen given KillTimer() is called on release, but avoids silently
+// swallowing GUIComponent's own Timer()/OnTimer mechanism if it is ever
+// used for something else on this class in the future.
+event Timer()
+{
+	if( bRepeatNavActive )
+	{
+		StepNav(RepeatNavKey);
+		SetTimer(RepeatNavInterval, false);
+		return;
+	}
+	Super.Timer();
+}
+
+// Forces Index to the actually-right-clicked row before the context menu
+// can act on it, regardless of whether the native right-click event
+// dispatches to this List directly or to the owning ListBox wrapper - see
+// KFMapVotingPageX.SendAdminSwitch()/SendVote() for the "always resolves to
+// map 0" bug this fixes. MapVoteMultiColumnListBox's own
+// InternalOnRightClick (bound at the WRAPPER level, XVoting/Classes/
+// MapVoteMultiColumnListBox.uc) already does this same sync, but
+// MapVotingPage.InternalOnOpen() has to manually wire
+// lb_MapListBox.List.OnClick = MapListClick for ordinary left-clicks to
+// work at all - proving raw mouse events dispatch to this List component
+// directly, not to the wrapper - so right-clicks most likely do too, in
+// which case the wrapper's own override never runs and Index is left
+// wherever bInitializeList seeded it (0), matching the reported symptom
+// exactly. This override makes the sync happen here too, so the fix
+// doesn't depend on resolving that ambiguity. Calls Super first to
+// preserve GUIListBase's own drag-cancel behavior
+// (Controller.bIgnoreNextRelease) - this list IS a real bDropSource
+// (MapVotingPage.uc sets lb_MapListBox.List.bDropSource = True).
+function bool InternalOnRightClick(GUIComponent Sender)
+{
+	local int NewIndex;
+
+	Super.InternalOnRightClick(Sender);
+
+	NewIndex = Top + ( (Controller.MouseY - ClientBounds[1]) / ItemHeight );
+	if( NewIndex >= ItemCount )
+		NewIndex = ItemCount - 1;
+	SetIndex(NewIndex);
+
+	log("STVoteDiag: MVMultiColumnList.InternalOnRightClick fired NewIndex="$NewIndex
+		$" Top="$Top$" ItemHeight="$ItemHeight$" ItemCount="$ItemCount,'STVoteDiag');
+
+	return true;
 }
 
 function ApplyFilter(string filter)
@@ -270,6 +440,11 @@ defaultproperties
 	ColumnHeadingHints(3)="User rating for the maps."
 
 	GetItemHeight=MyItemHeight
+	OnChange=NotifySelectionChanged
 	MyFontScale=FNS_Medium
 	FontScale=FNS_Medium
+
+	// ~0.15s/item covers a ~200-map list in about 30 seconds.
+	RepeatNavInitialDelay=0.25
+	RepeatNavInterval=0.15
 }
