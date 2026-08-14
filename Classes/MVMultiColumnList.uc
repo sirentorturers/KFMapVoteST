@@ -203,6 +203,20 @@ final function bool StepNav(Interactions.EInputKey NavKey)
 // game-type change, precisely so a still-pending timer like this one
 // doesn't fire against an abandoned list.
 //
+// SetTimer() is called ONCE here, as a genuinely repeating timer
+// (bRepeat=true) starting at RepeatNavInitialDelay - not as a one-shot
+// re-armed by calling SetTimer() again from inside Timer() itself (an
+// earlier version of this feature did that and stopped dead after only two
+// steps: no class anywhere in this package or the reference SDK calls
+// SetTimer() a second time from inside its own Timer() event, which is a
+// strong sign that pattern silently doesn't work here). Timer() instead
+// speeds the ALREADY-running repeat up to RepeatNavInterval by directly
+// reassigning the inherited TimerInterval field (GUIComponent.uc) once the
+// first tick has fired - the actual confirmed-working way to change an
+// in-progress repeating timer's pace on this class, per GUIScrollText.uc's
+// own identical use of the same field (TimerInterval = CharDelay;) to vary
+// its own per-character reveal speed mid-repeat.
+//
 // Falls through to Super for every other key (Left/Right/Home/End/PgUp/
 // PgDn/MouseWheel/Ctrl+A), so nothing else is affected. Because this is a
 // scoped per-component key-event delegate (not global input), it
@@ -224,7 +238,7 @@ function bool InternalOnKeyEvent(out byte Key, out byte KeyState, float Delta)
 			StepNav(iKey);
 			bRepeatNavActive = true;
 			RepeatNavKey = iKey;
-			SetTimer(RepeatNavInitialDelay, false);
+			SetTimer(RepeatNavInitialDelay, true);
 			return true;
 		}
 		if( KeyState == 3 && iKey == RepeatNavKey ) // IST_Release
@@ -239,19 +253,24 @@ function bool InternalOnKeyEvent(out byte Key, out byte KeyState, float Delta)
 }
 
 // Drives the continuous-scroll phase of the W/S/Up/Down repeat described
-// above - re-arms itself every RepeatNavInterval for as long as
-// bRepeatNavActive stays true (cleared by InternalOnKeyEvent() on
-// release). Falls back to the inherited default (OnTimer delegate) if this
-// timer ever fires while a repeat isn't actually active - shouldn't
-// happen given KillTimer() is called on release, but avoids silently
-// swallowing GUIComponent's own Timer()/OnTimer mechanism if it is ever
-// used for something else on this class in the future.
+// above. The timer itself is already repeating (armed with bRepeat=true in
+// InternalOnKeyEvent()) - this only needs to step once per firing and, the
+// first time it fires, slow the repeat down from RepeatNavInitialDelay to
+// the steady-state RepeatNavInterval by reassigning TimerInterval directly
+// (see InternalOnKeyEvent()'s comment for why that's used instead of a
+// second SetTimer() call). Reassigning TimerInterval to the same value on
+// every subsequent firing is harmless. Falls back to the inherited default
+// (OnTimer delegate) if this timer ever fires while a repeat isn't
+// actually active - shouldn't happen given KillTimer() is called on
+// release, but avoids silently swallowing GUIComponent's own Timer()/
+// OnTimer mechanism if it's ever used for something else on this class in
+// the future.
 event Timer()
 {
 	if( bRepeatNavActive )
 	{
 		StepNav(RepeatNavKey);
-		SetTimer(RepeatNavInterval, false);
+		TimerInterval = RepeatNavInterval;
 		return;
 	}
 	Super.Timer();

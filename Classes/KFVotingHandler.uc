@@ -727,6 +727,7 @@ function SubmitMapVote(int MapIndex, int GameIndex, Actor Voter)
 	local int Index, VoteCount, PrevMapVote, PrevGameVote;
 	local MapHistoryInfo MapInfo;
 	local bool bAdminForce;
+	local bool bWasRandomMap;
 	local PlayerController PC;
 	local PlayerReplicationInfo PRI;
 
@@ -760,10 +761,12 @@ function SubmitMapVote(int MapIndex, int GameIndex, Actor Voter)
 		{
 			PickRandomMapForGameConfig(GameIndex, MapIndex);
 			SetRandomMapVoteFlag(true);
+			bWasRandomMap = true;
 		}
 		else
 		{
 			SetRandomMapVoteFlag(false); // defensive reset - a real map was chosen directly
+			bWasRandomMap = false;
 		}
 
 		TextMessage = lmsgAdminMapChange;
@@ -779,6 +782,30 @@ function SubmitMapVote(int MapIndex, int GameIndex, Actor Voter)
 		MapInfo = History.PlayMap(MapList[MapIndex].MapName);
 
 		ServerTravelString = SetupGameMap(MapList[MapIndex], GameIndex, MapInfo);
+		// Experimental, additive URL-flag signal (PooSH's suggested alternative
+		// to KFRandomMapVoteFlag's cross-package DynamicLoadObject read - see
+		// SetRandomMapVoteFlag()'s own comment). Appended alongside, not instead
+		// of, the proven-working flag above, purely to test whether a receiving
+		// mod can detect it via Level.GetLocalURL() after travel.
+		//
+		// MUST be written with an explicit =1/=0 value on every travel, never
+		// just conditionally present - Level.ServerTravel(URL, false) is a
+		// RELATIVE travel, and confirmed via real log evidence that any URL
+		// option key absent from the new travel string is silently inherited
+		// from the URL being left. A bare "?RandomMap" (no value) with nothing
+		// to override it on a later non-random travel leaked forward onto
+		// every subsequent map until another travel happened to also set it -
+		// caught via a real KF-Snowglobe (random win) -> KF-AbusementPark
+		// (real, non-random win) sequence where AbusementPark's own
+		// ServerTravelString correctly had no RandomMap token at all, yet the
+		// engine's actual "Browse:" URL for it still carried "?RandomMap" over
+		// from Snowglobe. GameLength=/Difficulty=/Mutator= never show this
+		// because they're already always written with a fresh explicit value
+		// on every travel, never conditionally present/absent like this was.
+		if( bWasRandomMap )
+			ServerTravelString = ServerTravelString $ "?RandomMap=1";
+		else
+			ServerTravelString = ServerTravelString $ "?RandomMap=0";
 		log("ServerTravelString = " $ ServerTravelString ,'MapVoteDebug');
 
 		Level.ServerTravel(ServerTravelString, false);    // change the map
@@ -892,6 +919,7 @@ final function TallyVotesInternal(bool bForceMapSwitch)
 	local string     CurrentMap;
 	local int        Votes;
 	local MapHistoryInfo MapInfo;
+	local bool       bWasRandomMap;
 
 	if(bLevelSwitchPending)
 		return;
@@ -1038,10 +1066,12 @@ final function TallyVotesInternal(bool bForceMapSwitch)
 			PickRandomMapForGameConfig(gameidx, mapidx);
 			topmap = gameidx * MapCount + mapidx;
 			SetRandomMapVoteFlag(true);
+			bWasRandomMap = true;
 		}
 		else
 		{
 			SetRandomMapVoteFlag(false); // defensive reset - a real map won outright
+			bWasRandomMap = false;
 		}
 		// ---- end RANDOM MAP resolution swap ----
 
@@ -1054,6 +1084,14 @@ final function TallyVotesInternal(bool bForceMapSwitch)
 		MapInfo = History.PlayMap(MapList[topmap - topmap/MapCount * MapCount].MapName);
 
 		ServerTravelString = SetupGameMap(MapList[topmap - topmap/MapCount * MapCount], topmap/MapCount, MapInfo);
+		// Experimental, additive URL-flag signal - see the matching comment
+		// (including the relative-travel-inheritance gotcha) in
+		// SubmitMapVote()'s admin-force branch above. Must always be written
+		// with an explicit =1/=0 value, never just conditionally appended.
+		if( bWasRandomMap )
+			ServerTravelString = ServerTravelString $ "?RandomMap=1";
+		else
+			ServerTravelString = ServerTravelString $ "?RandomMap=0";
 		log("ServerTravelString = " $ ServerTravelString ,'MapVoteDebug');
 
 		History.Save();
@@ -1152,6 +1190,13 @@ function Timer()
 				GetDefaultMap(mapidx, gameidx);
 				MapInfo = History.PlayMap(MapList[mapidx].MapName);
 				ServerTravelString = SetupGameMap(MapList[mapidx], gameidx, MapInfo);
+				// Explicit =0, not just omitted - see the relative-travel
+				// inheritance gotcha documented in SubmitMapVote()'s
+				// admin-force branch. This recovery path is never a
+				// deliberate random-map outcome, but omitting the key
+				// entirely would let a stale "RandomMap=1" from an earlier
+				// real random win ride forward onto this travel too.
+				ServerTravelString = ServerTravelString $ "?RandomMap=0";
 				log("ServerTravelString = " $ ServerTravelString ,'MapVoteDebug');
 				History.Save();
 				SetRandomMapVoteFlag(false); // defensive reset - a failed-switch recovery is never a deliberate random-map outcome
@@ -1662,6 +1707,22 @@ final function PickRandomMapForGameConfig(out int GCIdx, out int mapidx)
 // resolution (see TallyVotesInternal()'s winner block, SubmitMapVote()'s
 // bAdminForce branch, and Timer()'s failed-switch-recovery branch) so the
 // flag never lingers stale from an earlier round.
+//
+// A second, purely additive signal (a "RandomMap=1"/"RandomMap=0"
+// ServerTravel URL suffix, ALWAYS written explicitly - see the three
+// real-resolution/recovery call sites, and the relative-travel-inheritance
+// gotcha documented at the first of them) was added alongside this one at
+// PooSH's suggestion, since he didn't want ScrnBalance's upstream code
+// coupled to this class by name via DynamicLoadObject. Confirmed working
+// end-to-end via real log evidence after fixing one real bug: an early
+// version wrote the suffix only when true (bare "?RandomMap", no value),
+// and because Level.ServerTravel(URL, false) is a relative travel that
+// inherits any URL option key absent from a later travel string, that bare
+// flag leaked forward onto every subsequent map after a real random win
+// until something else happened to also set it. This flag/class remains
+// the primary, unconditionally-proven mechanism regardless - the URL
+// signal is being kept as an additional, independently-working option for
+// the version submitted upstream to PooSH, not a replacement.
 final function SetRandomMapVoteFlag(bool bValue)
 {
 	local KFRandomMapVoteFlag F;

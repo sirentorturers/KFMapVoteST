@@ -99,7 +99,12 @@ function bool InternalOnKeyEvent(out byte Key, out byte KeyState, float Delta)
 			StepNav(iKey);
 			bRepeatNavActive = true;
 			RepeatNavKey = iKey;
-			SetTimer(RepeatNavInitialDelay, false);
+			// Genuinely repeating timer (bRepeat=true) - see
+			// MVMultiColumnList.InternalOnKeyEvent()'s comment for why NOT
+			// a one-shot re-armed by a second SetTimer() call from inside
+			// Timer() (that pattern has no working precedent anywhere in
+			// this SDK and stopped after two steps when tried).
+			SetTimer(RepeatNavInitialDelay, true);
 			return true;
 		}
 		if( KeyState == 3 && iKey == RepeatNavKey ) // IST_Release
@@ -113,12 +118,15 @@ function bool InternalOnKeyEvent(out byte Key, out byte KeyState, float Delta)
 	return Super.InternalOnKeyEvent(Key, KeyState, Delta);
 }
 
+// See MVMultiColumnList.Timer() - identical logic. Speeds the already-
+// repeating timer up to RepeatNavInterval via direct TimerInterval
+// reassignment (GUIComponent.uc) rather than a second SetTimer() call.
 event Timer()
 {
 	if( bRepeatNavActive )
 	{
 		StepNav(RepeatNavKey);
-		SetTimer(RepeatNavInterval, false);
+		TimerInterval = RepeatNavInterval;
 		return;
 	}
 	Super.Timer();
