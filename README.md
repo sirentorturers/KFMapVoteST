@@ -15,3 +15,5 @@ A fork of KFMapVoteV3SE that resolves bugs and adds several new features. Most o
 To install, you must completely remove all previous KFMapVote files from your system folder. Ensure you have your voting handler updated in your KillingFloor.ini to KFMapVoteST. Then, you must reconfigure your inis to work with our new methods for defining game modes. Please check the Configs folder for example inis. In short, GameConfig arrays are no longer defined in KFMapVote.ini, but in KFMapVoteModes.ini and using PerObjectConfigs instead of Arrays. If you run ScrnBalance and have edited ScrnGames, ScrnZeds, or any other inis like that, you should instantly be familiar with these.
 
 Map preview images (screenshot, author, player count) shown in the map vote footer are built by a separate pipeline - see `PREVIEW_PIPELINE.md` for the full how-to.
+
+AI Notice: Claude was used in the creation of this update.
