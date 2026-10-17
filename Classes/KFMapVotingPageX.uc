@@ -10,6 +10,35 @@ var automated GUILabel lbl_MapListDownloading;
 var localized string strHelp;
 var localized string strDownloadingMapList;
 
+// ------------------------------------------------------------------
+// Optional built-in "BRB next match" row (SirenTorturers servers only).
+//
+// Hidden unless the server runs a lobby/BRB handler that spawns an actor
+// of class BRBInfoClassName (ScrnBalanceST.ScrnLobbyInfo, spawned by
+// SirenTorturers.STAFKBRBMut) AND that actor's bShowEndGamePopup is true
+// (it only turns on at match end). Every other server never has that
+// actor, so the window looks and behaves exactly as before.
+//
+// No dependency in either direction: the actor is found by class NAME
+// (IsA) and read via GetPropertyText(), and the choice is sent with the
+// engine's own "mutate BRB NEXT ON|OFF" - the same command
+// ScrnNextMatchBRBPage's button sends. When the row is shown the window
+// grows by BRBRowExtraHeight to make room (see SetBRBRowVisible()).
+// ScrnLobbyInfo checks bBuiltInBRBRow (by name) on the active page and
+// skips its separate popup, which would otherwise grey out this window.
+// ------------------------------------------------------------------
+var automated GUILabel lbl_BRB;
+var automated GUIButton b_BRB;
+var automated moCheckBox ch_BRB;
+var bool bBuiltInBRBRow;
+var name BRBInfoClassName;
+var float BRBRowExtraHeight;     // fraction of screen height added to the window
+var ReplicationInfo BRBInfo;
+var bool bBRBRowShown;
+var bool bSuppressBRBEvents;
+var float NextBRBCheckTime;
+var float BRBPendingUntil;       // ignore server state until then, after a click
+
 // Tracks the difficulty currently selected in co_Difficulty, so
 // OnDifficultyChanged() can tell whether a change actually happened and
 // so we always know what to compare candidate modes' distance against.
@@ -196,6 +225,7 @@ event Timer()
 function Free()
 {
 	KillTimer();
+	BRBInfo = none;  // never hold an actor reference past the page's life
 	Super.Free();
 }
 
@@ -947,6 +977,9 @@ function OnDifficultyChanged(GUIComponent Sender)
 
 function bool AlignBK(Canvas C)
 {
+	// Also serves as this page's per-frame hook for the optional BRB row -
+	// this OnDraw runs every frame the page is drawn.
+	UpdateBRBRow();
 
 	if (lb_VoteCountListbox.MyList != none) {
 		i_MapCountListBackground.WinWidth  = lb_VoteCountListbox.MyList.ActualWidth();
@@ -963,6 +996,158 @@ function bool AlignBK(Canvas C)
 	}
 
 	return false;
+}
+
+// ------------------------------------------------------------------
+// Optional built-in BRB row - see lbl_BRB/b_BRB/ch_BRB's declaration.
+// ------------------------------------------------------------------
+
+// Throttled (twice a second) check of whether the BRB row should be
+// shown, and sync of the checkbox with the server's state.
+final function UpdateBRBRow()
+{
+	local PlayerController PC;
+	local bool bShow, bOn;
+
+	PC = PlayerOwner();
+	if( PC == none || PC.Level.TimeSeconds < NextBRBCheckTime )
+		return;
+	NextBRBCheckTime = PC.Level.TimeSeconds + 0.5;
+
+	if( BRBInfo != none && BRBInfo.bDeleteMe )
+		BRBInfo = none;
+	if( BRBInfo == none )
+		BRBInfo = FindBRBInfo(PC);
+
+	bShow = BRBInfo != none
+		&& BRBInfo.GetPropertyText("bShowEndGamePopup") ~= "True"
+		&& PC.PlayerReplicationInfo != none
+		&& !PC.PlayerReplicationInfo.bOnlySpectator;
+	SetBRBRowVisible(bShow);
+	if( !bShow )
+		return;
+
+	// NextBRBIDs: ",12,15," style list of PlayerIDs marked BRB for the next
+	// match. Searched with InStr, so it doesn't matter whether
+	// GetPropertyText() returns the string quoted or not.
+	if( PC.Level.TimeSeconds >= BRBPendingUntil )
+	{
+		bOn = InStr(BRBInfo.GetPropertyText("NextBRBIDs"), "," $ PC.PlayerReplicationInfo.PlayerID $ ",") != -1;
+		if( ch_BRB.IsChecked() != bOn )
+		{
+			bSuppressBRBEvents = true;
+			ch_BRB.Checked(bOn);
+			bSuppressBRBEvents = false;
+		}
+	}
+}
+
+final function ReplicationInfo FindBRBInfo(PlayerController PC)
+{
+	local ReplicationInfo RI;
+
+	foreach PC.DynamicActors(class'ReplicationInfo', RI)
+	{
+		if( RI.IsA(BRBInfoClassName) && !RI.bDeleteMe )
+			return RI;
+	}
+	return none;
+}
+
+// Shows/hides the BRB row, growing/shrinking the window by
+// BRBRowExtraHeight to make room. Every child that scales with the window
+// (bScaleToParent) gets its vertical fractions rescaled so it keeps its
+// on-screen size - except anything spanning the whole window (the
+// background), which should simply stretch.
+final function SetBRBRowVisible(bool bShow)
+{
+	local float OldH, NewH, Extra, Scale, RowTop, RowH;
+	local int i;
+	local GUIComponent Comp;
+
+	if( bShow == bBRBRowShown )
+		return;
+	bBRBRowShown = bShow;
+
+	Extra = BRBRowExtraHeight;
+	if( WinHeight > 1.0 )
+		Extra *= Controller.ResY;  // window height given in pixels
+	OldH = WinHeight;
+	if( bShow )
+		NewH = OldH + Extra;
+	else
+		NewH = OldH - Extra;
+	Scale = OldH / NewH;
+
+	WinHeight = NewH;
+	if( WinHeight <= 1.0 && WinTop + WinHeight > 1.0 )
+		WinTop = FMax(0.0, 1.0 - WinHeight);
+
+	for( i=0; i<Controls.Length; i++ )
+	{
+		Comp = Controls[i];
+		if( Comp == none || Comp == lbl_BRB || Comp == b_BRB || Comp == ch_BRB || !Comp.bScaleToParent )
+			continue;
+		if( Comp.WinTop <= 0.001 && Comp.WinHeight >= 0.999 )
+			continue;  // full-window background
+		if( Comp.WinTop <= 1.0 )
+			Comp.WinTop *= Scale;
+		if( Comp.WinHeight <= 1.0 )
+			Comp.WinHeight *= Scale;
+	}
+
+	if( bShow )
+	{
+		// The new strip is the bottom (Extra/NewH) of the window, i.e.
+		// everything below Scale - the old content's full height.
+		RowH = (Extra / NewH) * 0.75;
+		RowTop = Scale + (Extra / NewH) * 0.05;
+		lbl_BRB.WinTop = RowTop;
+		lbl_BRB.WinHeight = RowH;
+		b_BRB.WinTop = RowTop;
+		b_BRB.WinHeight = RowH;
+		ch_BRB.WinTop = RowTop;
+		ch_BRB.WinHeight = RowH;
+	}
+
+	lbl_BRB.SetVisibility(bShow);
+	b_BRB.SetVisibility(bShow);
+	ch_BRB.SetVisibility(bShow);
+}
+
+// "Be Right Back" just ticks the checkbox (no-op if already ticked).
+function bool InternalOnBRBClick(GUIComponent Sender)
+{
+	if( ch_BRB.IsChecked() )
+		return true;
+	bSuppressBRBEvents = true;
+	ch_BRB.Checked(true);
+	bSuppressBRBEvents = false;
+	SendBRBNext(true);
+	return true;
+}
+
+function InternalOnBRBChange(GUIComponent Sender)
+{
+	if( !bSuppressBRBEvents )
+		SendBRBNext(ch_BRB.IsChecked());
+}
+
+final function SendBRBNext(bool bOn)
+{
+	local PlayerController PC;
+
+	PC = PlayerOwner();
+	if( PC == none )
+		return;
+
+	// Keep the box as clicked until the server's reply has had time to
+	// replicate back (see UpdateBRBRow()).
+	BRBPendingUntil = PC.Level.TimeSeconds + 2.0;
+	if( bOn )
+		PC.Mutate("BRB NEXT ON");
+	else
+		PC.Mutate("BRB NEXT OFF");
 }
 
 DefaultProperties
@@ -1126,4 +1311,53 @@ DefaultProperties
 		TabOrder=10
 	End Object
 	f_Chat=ChatFooter
+
+	bBuiltInBRBRow=True
+	BRBInfoClassName=ScrnLobbyInfo
+	BRBRowExtraHeight=0.05
+
+	// Positioned (WinTop/WinHeight) by SetBRBRowVisible().
+	Begin Object Class=GUILabel Name=BRBLabel
+		Caption="Stepping away? Mark yourself BRB for the next match."
+		TextAlign=TXTA_Left
+		VertAlign=TXTA_Center
+		TextColor=(R=255,G=255,B=64,A=255)
+		TextFont="UT2SmallFont"
+		bVisible=False
+		WinLeft=0.02
+		WinWidth=0.50
+		WinHeight=0.03
+		bScaleToParent=True
+		bBoundToParent=True
+	End Object
+	lbl_BRB=BRBLabel
+
+	Begin Object Class=GUIButton Name=BRBButton
+		Caption="Be Right Back"
+		bVisible=False
+		WinLeft=0.53
+		WinWidth=0.20
+		WinHeight=0.03
+		TabOrder=11
+		bScaleToParent=True
+		bBoundToParent=True
+		OnClick=InternalOnBRBClick
+	End Object
+	b_BRB=BRBButton
+
+	// Same component (and look) as the lobby's Ready boxes.
+	Begin Object Class=moCheckBox Name=BRBCheck
+		Caption="BRB next match"
+		ComponentJustification=TXTA_Left
+		CaptionWidth=0.82
+		bVisible=False
+		WinLeft=0.75
+		WinWidth=0.23
+		WinHeight=0.03
+		TabOrder=12
+		bScaleToParent=True
+		bBoundToParent=True
+		OnChange=InternalOnBRBChange
+	End Object
+	ch_BRB=BRBCheck
 }
