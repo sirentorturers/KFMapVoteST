@@ -7,7 +7,7 @@
 //  "BRUTE"). Written server-side by ScrnBalanceST.ScrnZedVoting.
 //  PublishZedVoteStates() and read server-side by KFVotingHandler.
 //  RefreshZedVotes(), then replicated to clients - see
-//  KFVotingReplicationInfo.ReceiveZedVoteRep()/TickedReplication_ZedVotes()
+//  KFVotingReplicationInfo.ReceiveZedVoteCount()/ReceiveZedVoteItem()
 //  for the per-item RPC that carries it the rest of the way to the lobby
 //  GUI (KFMapVotingPageX).
 //

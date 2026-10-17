@@ -48,17 +48,17 @@ var config bool bSpectatorsCanVote;
 // below and KFVotingReplicationInfo.PreviewAnimFrameRate).
 var config float PreviewAnimFrameRate;
 
-// Admin-configurable "Custom" difficulty slots (KFMapVote.ini). Blank
-// (default) = unused, matching Description's "blank means off" convention.
-// Each slot's value is BOTH the recognized trailing suffix word/phrase in
-// a mode's GameName AND the exact text shown/selected in the difficulty
-// dropdown - e.g. CustomDifficulty1="Zed Rush" makes a KFMapVoteModes.ini
+// Admin-configurable "Custom" difficulty labels (KFMapVote.ini), one
+// CustomDifficulty= line per label, as many as needed (empty by default).
+// Each value is BOTH the recognized trailing suffix word/phrase in a
+// mode's GameName AND the exact text shown/selected in the difficulty
+// dropdown - e.g. CustomDifficulty=Zed Rush makes a KFMapVoteModes.ini
 // entry with GameName="MyMode Zed Rush" resolve to difficulty "Zed Rush"
 // directly (see DeriveDifficulty()/MatchCustomDifficulty() below) - there
-// is no separate fixed literal token admins type into GameName.
-var config string CustomDifficulty1;
-var config string CustomDifficulty2;
-var config string CustomDifficulty3;
+// is no separate fixed literal token admins type into GameName. Server-
+// side only: clients never need the list (see KFMapVotingPageX.
+// DeriveModeGroup()), so it isn't replicated.
+var config array<string> CustomDifficulty;
 
 struct FMapRepType
 {
@@ -117,6 +117,12 @@ var array<string> GameConfigMapListValue;
 // any dependency on exactly which compiled package version a given
 // client happens to be running).
 var array<string> GameConfigDifficulty;
+
+// Index-matched with GameConfigDifficulty: the position of that entry's
+// difficulty in the CustomDifficulty list, or -1 for a built-in/blank one.
+// Replicated alongside it so the client can order custom labels in the
+// difficulty dropdown exactly as they're listed in KFMapVote.ini.
+var array<int> GameConfigDifficultySort;
 
 // Set by PostBeginPlay() when a CurrentGameConfig re-validation is queued
 // (see RevalidateCurrentGameConfig() below) - Level.GetLocalURL() reads
@@ -242,6 +248,7 @@ final function BuildGameConfig()
 	GameConfigMapListStyle.Length = Entries.Length;
 	GameConfigMapListValue.Length = Entries.Length;
 	GameConfigDifficulty.Length = Entries.Length;
+	GameConfigDifficultySort.Length = Entries.Length;
 	for( i=0; i<Entries.Length; i++ )
 	{
 		GameConfig[i].GameClass = Entries[i].GameClass;
@@ -252,10 +259,18 @@ final function BuildGameConfig()
 		GameConfig[i].Options   = Entries[i].Options;
 		GameConfigDescriptions[i] = Entries[i].Description;
 		GameConfigDifficulty[i] = DeriveDifficulty(Entries[i].GameName);
+		GameConfigDifficultySort[i] = FindCustomDifficultyIndex(GameConfigDifficulty[i]);
 
 		ResolveMapList(Entries, Entries[i], ResolvedStyle, ResolvedValue);
 		GameConfigMapListStyle[i] = ResolvedStyle;
 		GameConfigMapListValue[i] = ResolvedValue;
+
+		// Description/MapListValue are sent to clients in packet-sized
+		// chunks, but these fields still ride in a single RPC (see
+		// KFVotingReplicationInfo.GAMECONFIG_TEXT_CHUNK) - far beyond any
+		// sane GameName, but warn rather than let the download stall silently.
+		if( Len(GameConfig[i].GameClass) + Len(GameConfig[i].Prefix) + Len(GameConfig[i].GameName) + Len(GameConfigDifficulty[i]) > 300 )
+			log("___BuildGameConfig: '"$string(Entries[i].Name)$"' has an unusually long GameClass/Prefix/GameName - clients may get stuck on 'Downloading Map List'.",'MapVote');
 	}
 
 	log("___BuildGameConfig: assembled "$GameConfig.Length$" GameConfig entries from KFMapVoteModes.ini.",'MapVote');
@@ -377,6 +392,38 @@ final function bool EndsWithWord(string Text, string Suffix)
 	return false;
 }
 
+// Checks GameName against every admin-configured custom difficulty label
+// (CustomDifficulty above) and returns the LONGEST one that matches - so
+// a shorter label that also happens to be a valid trailing word of a
+// longer one (e.g. "Realistic" inside "Realistic Advanced") can't shadow
+// the more specific match, regardless of the order labels are listed in.
+final function bool MatchCustomDifficulty(string GameName, out string Matched)
+{
+	local int i;
+
+	Matched = "";
+	for( i=0; i<CustomDifficulty.Length; i++ )
+	{
+		if( Len(CustomDifficulty[i]) > Len(Matched) && EndsWithWord(GameName, CustomDifficulty[i]) )
+			Matched = CustomDifficulty[i];
+	}
+	return Matched != "";
+}
+
+// Position of Difficulty in the CustomDifficulty list, or -1 if it isn't
+// one of them (a built-in difficulty, or blank).
+final function int FindCustomDifficultyIndex(string Difficulty)
+{
+	local int i;
+
+	if( Difficulty == "" )
+		return -1;
+	for( i=0; i<CustomDifficulty.Length; i++ )
+		if( CustomDifficulty[i] ~= Difficulty )
+			return i;
+	return -1;
+}
+
 // Longest/most specific aliases checked first, so "Hell on Earth" is
 // found as a whole trailing phrase before any shorter alias could
 // partially match. Returns "" if GameName doesn't end in any recognized
@@ -385,32 +432,6 @@ final function bool EndsWithWord(string Text, string Suffix)
 // once here, server-side, in BuildGameConfig(), and replicated directly
 // (see GameConfigDifficulty above) instead of every client re-deriving
 // its own answer from GameName text.
-// Checks GameName against the 3 admin-configured custom difficulty labels
-// (CustomDifficulty1/2/3 above), longest first - so a shorter custom label
-// that also happens to be a valid trailing word of a longer one (e.g.
-// "Rush" inside "Zed Rush") can't shadow the more specific match. Same
-// "sort candidate patterns by length descending" convention already used
-// elsewhere in this package (see CLAUDE.md's Working Conventions). Manual
-// 3-way compare/swap rather than a generic sort - only 3 elements, and
-// array.Find()/generic sort helpers aren't available in this SDK anyway.
-final function bool MatchCustomDifficulty(string GameName, out string Matched)
-{
-	local string L1, L2, L3, Tmp;
-
-	L1 = CustomDifficulty1;
-	L2 = CustomDifficulty2;
-	L3 = CustomDifficulty3;
-
-	if( Len(L2) > Len(L1) ) { Tmp=L1; L1=L2; L2=Tmp; }
-	if( Len(L3) > Len(L1) ) { Tmp=L1; L1=L3; L3=Tmp; }
-	if( Len(L3) > Len(L2) ) { Tmp=L2; L2=L3; L3=Tmp; }
-
-	if( L1 != "" && EndsWithWord(GameName, L1) ) { Matched = L1; return true; }
-	if( L2 != "" && EndsWithWord(GameName, L2) ) { Matched = L2; return true; }
-	if( L3 != "" && EndsWithWord(GameName, L3) ) { Matched = L3; return true; }
-	return false;
-}
-
 final function string DeriveDifficulty(string GameName)
 {
 	local string CustomMatch;
@@ -424,7 +445,7 @@ final function string DeriveDifficulty(string GameName)
 	if( EndsWithWord(GameName, "HoE") )           return "Hell on Earth";
 	if( EndsWithWord(GameName, "Sui") )           return "Suicidal";
 
-	// Admin-configurable Custom1-3 slots - checked last so a custom label
+	// Admin-configurable CustomDifficulty labels - checked last so a custom label
 	// can never shadow a reserved built-in word.
 	if( MatchCustomDifficulty(GameName, CustomMatch) )
 		return CustomMatch;
@@ -439,6 +460,13 @@ final function string GetGameConfigDifficulty(int Index)
 	if( Index < 0 || Index >= GameConfigDifficulty.Length )
 		return "";
 	return GameConfigDifficulty[Index];
+}
+
+final function int GetGameConfigDifficultySort(int Index)
+{
+	if( Index < 0 || Index >= GameConfigDifficultySort.Length )
+		return -1;
+	return GameConfigDifficultySort[Index];
 }
 
 // Index-bounds-checked accessors for the map-list-restriction parallel
@@ -1128,9 +1156,6 @@ function AddMapVoteReplicationInfo(PlayerController Player)
 	M.PlayerID = Player.PlayerReplicationInfo.PlayerID;
 	M.bShowMapLike = bShowMapLike;
 	M.PreviewAnimFrameRate = PreviewAnimFrameRate;
-	M.CustomDifficulty1 = CustomDifficulty1;
-	M.CustomDifficulty2 = CustomDifficulty2;
-	M.CustomDifficulty3 = CustomDifficulty3;
 	MVRI[MVRI.Length] = M;
 }
 

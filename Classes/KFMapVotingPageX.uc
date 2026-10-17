@@ -123,7 +123,7 @@ function InternalOnOpen()
 		if( CurrentDifficulty != "" )
 		{
 			SelectDifficultyItem(CurrentDifficulty);
-			RebuildGameTypeList(CurrentDifficulty, DeriveModeGroup(MVRI.GameConfig[CurrentGameConfig()].GameName), CurrentGameConfig());
+			RebuildGameTypeList(CurrentDifficulty, DeriveModeGroup(CurrentGameConfig()), CurrentGameConfig());
 		}
 		else if( SelectedGameName != "?" )
 		{
@@ -546,39 +546,6 @@ final function bool EndsWithWord(string Text, string Suffix)
 	return false;
 }
 
-// Client-side twin of KFVotingHandler.MatchCustomDifficulty() - checks
-// GameName against the 3 admin-configured custom difficulty labels
-// (KFMapVote.ini, replicated via KFVotingReplicationInfo.CustomDifficulty1/
-// 2/3), longest-first so a shorter label can't shadow a longer one that
-// happens to end the same way. Duplicated rather than shared - same
-// convention this file already uses for RANDOM_MAP_NAME/EndsWithWord()
-// between client and server, since no shared base class spans both. Only
-// needed by DeriveModeGroup() below - the resolved difficulty value itself
-// (GameConfigDifficulty) already replicates per-entry from the server's own
-// DeriveDifficulty(), so nothing else client-side needs this.
-final function bool MatchCustomDifficultyLabel(string GameName, out string Matched)
-{
-	local KFVotingReplicationInfo KFMVRI;
-	local string L1, L2, L3, Tmp;
-
-	KFMVRI = KFVotingReplicationInfo(MVRI);
-	if( KFMVRI == none )
-		return false;
-
-	L1 = KFMVRI.CustomDifficulty1;
-	L2 = KFMVRI.CustomDifficulty2;
-	L3 = KFMVRI.CustomDifficulty3;
-
-	if( Len(L2) > Len(L1) ) { Tmp=L1; L1=L2; L2=Tmp; }
-	if( Len(L3) > Len(L1) ) { Tmp=L1; L1=L3; L3=Tmp; }
-	if( Len(L3) > Len(L2) ) { Tmp=L2; L2=L3; L3=Tmp; }
-
-	if( L1 != "" && EndsWithWord(GameName, L1) ) { Matched = L1; return true; }
-	if( L2 != "" && EndsWithWord(GameName, L2) ) { Matched = L2; return true; }
-	if( L3 != "" && EndsWithWord(GameName, L3) ) { Matched = L3; return true; }
-	return false;
-}
-
 // Strips a leading "NN. " index (e.g. "00. Standard: Hard") and a
 // trailing recognized difficulty word/phrase, leaving the shared "mode
 // family" name - e.g. "00. Standard: Hard" -> "Standard", "Chocolate
@@ -586,12 +553,26 @@ final function bool MatchCustomDifficultyLabel(string GameName, out string Match
 // trailing difficulty word (e.g. "FTG") come back mostly as-is, which
 // correctly makes them a "family of one" that stays visible under any
 // difficulty filter.
-final function string DeriveModeGroup(string GameName)
+//
+// Takes a GameConfig index rather than the bare GameName so admin-defined
+// custom difficulties (KFVotingHandler.CustomDifficulty) can be stripped
+// too, without the client ever needing the label list itself: for a
+// custom match the server's resolved GameConfigDifficulty value IS the
+// exact trailing label (see KFVotingHandler.MatchCustomDifficulty()), so
+// it's simply trimmed off the end of GameName.
+final function string DeriveModeGroup(int Index)
 {
-	local string Remainder, CustomMatch;
+	local string Remainder, EntryDifficulty;
 	local int i, DigitEnd;
+	local KFVotingReplicationInfo KFMVRI;
 
-	Remainder = GameName;
+	if( Index < 0 || Index >= MVRI.GameConfig.Length )
+		return "";
+	Remainder = MVRI.GameConfig[Index].GameName;
+
+	KFMVRI = KFVotingReplicationInfo(MVRI);
+	if( KFMVRI != none && Index < KFMVRI.GameConfigDifficulty.Length )
+		EntryDifficulty = KFMVRI.GameConfigDifficulty[Index];
 
 	// Trim whichever alias actually matched (re-checked in the same
 	// priority order as DeriveDifficulty, since we need to know exactly
@@ -605,8 +586,8 @@ final function string DeriveModeGroup(string GameName)
 	else if( EndsWithWord(Remainder, "Hard") )        Remainder = Left(Remainder, Len(Remainder)-Len("Hard"));
 	else if( EndsWithWord(Remainder, "HoE") )         Remainder = Left(Remainder, Len(Remainder)-Len("HoE"));
 	else if( EndsWithWord(Remainder, "Sui") )         Remainder = Left(Remainder, Len(Remainder)-Len("Sui"));
-	else if( MatchCustomDifficultyLabel(Remainder, CustomMatch) )
-		Remainder = Left(Remainder, Len(Remainder)-Len(CustomMatch));
+	else if( EntryDifficulty != "" && EndsWithWord(Remainder, EntryDifficulty) )
+		Remainder = Left(Remainder, Len(Remainder)-Len(EntryDifficulty));
 
 	// Trim trailing whitespace, then a single trailing ':' left over from
 	// e.g. "Faster Floor: Hard" -> "Faster Floor: " -> "Faster Floor:"
@@ -640,7 +621,7 @@ final function string DeriveModeGroup(string GameName)
 // across the server-replicated GameConfigDifficulty array (index-matched
 // with GameConfig - see KFVotingHandler.GameConfigDifficulty), ordered per
 // DifficultyOrder first, then any leftover values (not listed in
-// DifficultyOrder) appended alphabetically. Deliberately never calls
+// DifficultyOrder - i.e. custom difficulties) in KFMapVote.ini order. Deliberately never calls
 // List.SortList() on this combo - that's what silently re-alphabetizes
 // co_GameType regardless of GameConfig's own SortOrder (see
 // KFVotingHandler.BuildGameConfig()'s comments) - here we want our own
@@ -704,7 +685,8 @@ final function BuildDifficultyList()
 		}
 	}
 
-	// Whatever's left: simple selection sort, alphabetical, case-insensitive.
+	// Whatever's left (custom difficulties): simple selection sort, in
+	// KFMapVote.ini order - see LeftoverSortsBefore().
 	Leftover = Distinct;
 	for( i=0; i<Leftover.Length-1; i++ )
 	{
@@ -715,8 +697,28 @@ final function BuildDifficultyList()
 	bSuppressComboEvents = false;
 }
 
-// In-place selection-sort step (alphabetical, case-insensitive) - swaps the
-// smallest remaining element into position i. Split out only to keep
+// True if difficulty A belongs before B among BuildDifficultyList()'s
+// leftovers: custom difficulties in KFMapVote.ini order first (see
+// FindDifficultyOrderIndex()), then anything unordered alphabetically.
+final function bool LeftoverSortsBefore(string A, string B)
+{
+	local int ia, ib;
+
+	ia = FindDifficultyOrderIndex(A);
+	ib = FindDifficultyOrderIndex(B);
+	if( ia != ib )
+	{
+		if( ia == -1 )
+			return false;
+		if( ib == -1 )
+			return true;
+		return ia < ib;
+	}
+	return Caps(A) < Caps(B);
+}
+
+// In-place selection-sort step (see LeftoverSortsBefore()) - swaps the
+// first remaining element into position i. Split out only to keep
 // BuildDifficultyList() readable.
 final function BestIdx_ForSort(out array<string> Arr, int i)
 {
@@ -726,7 +728,7 @@ final function BestIdx_ForSort(out array<string> Arr, int i)
 	BestIdx = i;
 	for( j=i+1; j<Arr.Length; j++ )
 	{
-		if( Caps(Arr[j]) < Caps(Arr[BestIdx]) )
+		if( LeftoverSortsBefore(Arr[j], Arr[BestIdx]) )
 			BestIdx = j;
 	}
 	if( BestIdx != i )
@@ -747,17 +749,28 @@ final function SelectDifficultyItem(string Difficulty)
 	CurrentDifficulty = Difficulty;
 }
 
-// Index of a difficulty within DifficultyOrder, or -1 if it isn't listed
-// there (e.g. a difficulty word someone forgot to add to the order list -
-// it still shows in the dropdown, appended alphabetically, but it has no
-// defined ordinal position for "closest available" purposes).
+// Ordinal position of a difficulty: its index within DifficultyOrder for
+// a built-in, or - for an admin-defined custom difficulty - just past the
+// built-ins, in the order its CustomDifficulty= line appears in
+// KFMapVote.ini (KFVotingReplicationInfo.GameConfigDifficultySort). -1 if
+// it has neither (shouldn't happen - it still shows in the dropdown,
+// appended alphabetically, but has no defined ordinal position for
+// "closest available" purposes).
 final function int FindDifficultyOrderIndex(string D)
 {
 	local int i;
+	local KFVotingReplicationInfo KFMVRI;
 
 	for( i=0; i<ArrayCount(DifficultyOrder); i++ )
 		if( DifficultyOrder[i] ~= D )
 			return i;
+
+	KFMVRI = KFVotingReplicationInfo(MVRI);
+	if( KFMVRI == none || D == "" )
+		return -1;
+	for( i=0; i<KFMVRI.GameConfigDifficulty.Length && i<KFMVRI.GameConfigDifficultySort.Length; i++ )
+		if( KFMVRI.GameConfigDifficulty[i] ~= D && KFMVRI.GameConfigDifficultySort[i] > -1 )
+			return ArrayCount(DifficultyOrder) + KFMVRI.GameConfigDifficultySort[i];
 	return -1;
 }
 
@@ -782,7 +795,7 @@ final function int FamilyCount(string Group)
 	local int i, C;
 
 	for( i=0; i<MVRI.GameConfig.Length; i++ )
-		if( DeriveModeGroup(MVRI.GameConfig[i].GameName) ~= Group )
+		if( DeriveModeGroup(i) ~= Group )
 			C++;
 	return C;
 }
@@ -836,7 +849,7 @@ final function int RebuildGameTypeList(string Difficulty, string PreferredGroup,
 			EntryDifficulty = KFMVRI.GameConfigDifficulty[i];
 		bMatchesFilter = ( EntryDifficulty=="" )
 			|| ( EntryDifficulty~=Difficulty )
-			|| ( FamilyCount(DeriveModeGroup(MVRI.GameConfig[i].GameName))==1 );
+			|| ( FamilyCount(DeriveModeGroup(i))==1 );
 
 		if( bMatchesFilter )
 		{
@@ -870,7 +883,7 @@ final function int RebuildGameTypeList(string Difficulty, string PreferredGroup,
 	{
 		for( i=0; i<VisibleIndices.Length; i++ )
 		{
-			if( DeriveModeGroup(MVRI.GameConfig[VisibleIndices[i]].GameName) ~= PreferredGroup )
+			if( DeriveModeGroup(VisibleIndices[i]) ~= PreferredGroup )
 			{
 				EntryDifficulty = "";
 				if( VisibleIndices[i] < KFMVRI.GameConfigDifficulty.Length )
@@ -915,7 +928,7 @@ function OnDifficultyChanged(GUIComponent Sender)
 
 	PreviousIdx = CurrentGameConfig();
 	if( PreviousIdx > -1 && PreviousIdx < MVRI.GameConfig.Length )
-		PreferredGroup = DeriveModeGroup(MVRI.GameConfig[PreviousIdx].GameName);
+		PreferredGroup = DeriveModeGroup(PreviousIdx);
 
 	CurrentDifficulty = NewDifficulty;
 

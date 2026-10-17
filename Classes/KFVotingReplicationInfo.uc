@@ -45,6 +45,28 @@ var array<string> GameConfigMapListValue;
 // difficulty client-side from GameName text.
 var array<string> GameConfigDifficulty;
 
+// Client-side mirror of KFVotingHandler.GameConfigDifficultySort, index-
+// matched with GameConfigDifficulty - delivered the same way.
+var array<int> GameConfigDifficultySort;
+
+// Client-side accumulators for TickedReplication_GameConfig()'s chunked
+// Description/MapListValue send (see GAMECONFIG_TEXT_CHUNK below) - filled
+// piecewise by ReceiveGameConfigText(), then consumed and cleared by the
+// ReceiveGameConfigRep() call that always follows them for the same entry.
+var string PendingDescription;
+var string PendingMapListValue;
+
+// Max characters of Description/MapListValue carried per RPC. UE2 can't
+// split a single function call across packets - one whose parameters
+// don't fit in a packet (~500 bytes) is silently dropped ("Call bunch
+// overflowed", DevNetTraffic only), so ReplicationReply() never comes back
+// and the client sits on "Downloading Map List" forever. Previously both
+// strings rode inside ReceiveGameConfigRep() itself, so any mode with a
+// long Description or a long AllowMap=/ExcludeMap= list stalled the whole
+// download. 150 chars stays under the limit even if the text is non-ANSI
+// (sent as 2 bytes/char).
+const GAMECONFIG_TEXT_CHUNK = 150;
+
 var sound AnnounceSnds[13];
 var byte MapRepVote;
 var bool bClientHasInit;
@@ -58,18 +80,6 @@ var bool bShowMapLike;
 // history with new replicated properties (see CLAUDE.md).
 var float PreviewAnimFrameRate;
 
-// Client-side mirrors of KFVotingHandler.CustomDifficulty1/2/3 - global/
-// server-wide settings, not per-GameConfig-entry data, so these ride the
-// same bNetInitial scalar block bShowMapLike/PreviewAnimFrameRate already
-// use, not the per-item GameConfig RPC. Needed client-side only by
-// KFMapVotingPageX.DeriveModeGroup()/MatchCustomDifficultyLabel() - the
-// per-entry resolved difficulty value itself (GameConfigDifficulty)
-// already replicates per-item via ReceiveGameConfigRep() and needs no
-// changes for this feature.
-var string CustomDifficulty1;
-var string CustomDifficulty2;
-var string CustomDifficulty3;
-
 // Client-side mirror of KFVotingHandler.ZedVoteNames/ZedVoteStates -
 // unlike MapPreviewList/GameConfigDescriptions above, this data can change
 // value at an already-delivered index (a zed vote resolving mid-map), which
@@ -81,17 +91,18 @@ var string CustomDifficulty3;
 // request that only ever executes server-side once network-routed
 // (RequestZedVoteRefresh, same shape as SendMapRepVote below) and a
 // server-facing response that only ever executes client-side
-// (ReceiveZedVoteRep, same shape as ReceiveMapInfoRep/ReceiveGameConfigRep
-// above) - not a new bulk-replicated property in either direction.
+// (ReceiveZedVoteCount/ReceiveZedVoteItem, same shape as ReceiveMapInfoRep/
+// ReceiveGameConfigRep above) - not a new bulk-replicated property in
+// either direction.
 var array<string> ZedVoteNames;
 var array<byte> ZedVoteStates;
 
 replication
 {
 	reliable if( Role==ROLE_Authority && bNetInitial )
-		bShowMapLike, PreviewAnimFrameRate, CustomDifficulty1, CustomDifficulty2, CustomDifficulty3;
+		bShowMapLike, PreviewAnimFrameRate;
 	reliable if( Role==ROLE_Authority )
-		ReceiveMapInfoRep, ReceiveGameConfigRep, ReceiveZedVoteRep;
+		ReceiveMapInfoRep, ReceiveGameConfigRep, ReceiveGameConfigText, ReceiveZedVoteCount, ReceiveZedVoteItem;
 	reliable if( Role<ROLE_Authority )
 		SendMapRepVote, RequestZedVoteRefresh;
 }
@@ -156,17 +167,24 @@ function TickedReplication_GameConfig(int Index, bool bDedicated)
 {
 	local VotingHandler.MapVoteGameConfigLite GameConfigItem;
 	local string Description,MapListStyle,MapListValue,Difficulty;
+	local int DifficultySort;
 
 	GameConfigItem = VH.GetGameConfig(Index);
 	Description = KFVotingHandler(VH).GetGameConfigDescription(Index);
 	MapListStyle = KFVotingHandler(VH).GetGameConfigMapListStyle(Index);
 	MapListValue = KFVotingHandler(VH).GetGameConfigMapListValue(Index);
 	Difficulty = KFVotingHandler(VH).GetGameConfigDifficulty(Index);
+	DifficultySort = KFVotingHandler(VH).GetGameConfigDifficultySort(Index);
 	DebugLog("___Sending " $ Index $ " - " $ GameConfigItem.GameName);
 
 	if( bDedicated )
 	{
-		ReceiveGameConfigRep(GameConfigItem, Description, MapListStyle, MapListValue, Difficulty); // replicate one GameConfig entry each tick.
+		// Unbounded text first, in packet-sized pieces (see
+		// GAMECONFIG_TEXT_CHUNK) - reliable RPCs arrive in order, so these
+		// are always fully delivered before the ReceiveGameConfigRep() below.
+		SendGameConfigText(0, Description);
+		SendGameConfigText(1, MapListValue);
+		ReceiveGameConfigRep(GameConfigItem, MapListStyle, Difficulty, DifficultySort); // replicate one GameConfig entry each tick.
 		bWaitingForReply = True;
 	}
 	else
@@ -176,7 +194,19 @@ function TickedReplication_GameConfig(int Index, bool bDedicated)
 		GameConfigMapListStyle[GameConfigMapListStyle.Length] = MapListStyle;
 		GameConfigMapListValue[GameConfigMapListValue.Length] = MapListValue;
 		GameConfigDifficulty[GameConfigDifficulty.Length] = Difficulty;
+		GameConfigDifficultySort[GameConfigDifficultySort.Length] = DifficultySort;
 	}
+}
+
+// Server-side: splits Text into GAMECONFIG_TEXT_CHUNK-sized pieces and
+// sends each via ReceiveGameConfigText(). Field 0 = Description,
+// 1 = MapListValue. Empty text sends nothing.
+function SendGameConfigText(byte Field, string Text)
+{
+	local int i;
+
+	for( i=0; i<Len(Text); i+=GAMECONFIG_TEXT_CHUNK )
+		ReceiveGameConfigText(Field, Mid(Text, i, GAMECONFIG_TEXT_CHUNK));
 }
 
 function TickedReplication_MapList(int Index, bool bDedicated)
@@ -207,17 +237,32 @@ simulated function ReceiveMapInfoRep( VotingHandler.MapVoteMapList MapInfo, KFVo
 	ReplicationReply();
 }
 
+// Client-side receiver for SendGameConfigText()'s chunks above - appends
+// to the pending buffer for the GameConfig entry about to arrive.
+simulated function ReceiveGameConfigText( byte Field, string Chunk )
+{
+	if( Field == 0 )
+		PendingDescription = PendingDescription $ Chunk;
+	else
+		PendingMapListValue = PendingMapListValue $ Chunk;
+}
+
 // Client-side receiver for TickedReplication_GameConfig()'s widened send
 // above - stores into GameConfig exactly like the base engine's own
 // ReceiveGameConfig() would, plus the extra Description text into
-// GameConfigDescriptions at the same (matching) index.
-simulated function ReceiveGameConfigRep( VotingHandler.MapVoteGameConfigLite p_GameConfig, string Description, string MapListStyle, string MapListValue, string Difficulty )
+// GameConfigDescriptions at the same (matching) index. Description/
+// MapListValue were already delivered piecewise by ReceiveGameConfigText()
+// just before this call - consumed here and cleared for the next entry.
+simulated function ReceiveGameConfigRep( VotingHandler.MapVoteGameConfigLite p_GameConfig, string MapListStyle, string Difficulty, int DifficultySort )
 {
 	GameConfig[GameConfig.Length] = p_GameConfig;
-	GameConfigDescriptions[GameConfigDescriptions.Length] = Description;
+	GameConfigDescriptions[GameConfigDescriptions.Length] = PendingDescription;
 	GameConfigMapListStyle[GameConfigMapListStyle.Length] = MapListStyle;
-	GameConfigMapListValue[GameConfigMapListValue.Length] = MapListValue;
+	GameConfigMapListValue[GameConfigMapListValue.Length] = PendingMapListValue;
 	GameConfigDifficulty[GameConfigDifficulty.Length] = Difficulty;
+	GameConfigDifficultySort[GameConfigDifficultySort.Length] = DifficultySort;
+	PendingDescription = "";
+	PendingMapListValue = "";
 	ReplicationReply();
 }
 
@@ -288,25 +333,39 @@ function SendMapRepVote(byte value) {
 function RequestZedVoteRefresh()
 {
 	local KFVotingHandler KVH;
+	local int i;
 
 	KVH = KFVotingHandler(VH);
 	if ( KVH == none )
 		return;
 
 	KVH.RefreshZedVotes();
-	ReceiveZedVoteRep(KVH.ZedVoteNames, KVH.ZedVoteStates);
+	ReceiveZedVoteCount(KVH.ZedVoteNames.Length);
+	for( i=0; i<KVH.ZedVoteNames.Length; i++ )
+		ReceiveZedVoteItem(i, KVH.ZedVoteNames[i], KVH.ZedVoteStates[i]);
 }
 
 // Server-authoritative response to RequestZedVoteRefresh() above - routed
 // to the requesting client by the "Role==ROLE_Authority" replication
-// statement above, same as ReceiveMapInfoRep/ReceiveGameConfigRep. Simply
-// overwrites the client mirror rather than appending, since (unlike
-// MapList/GameConfig) this snapshot can legitimately shrink or change
-// values between requests.
-simulated function ReceiveZedVoteRep( array<string> Names, array<byte> States )
+// statement above, same as ReceiveMapInfoRep/ReceiveGameConfigRep. Sent as
+// a count followed by one call per entry rather than whole arrays: UE2
+// can't replicate dynamic arrays (as properties OR function parameters),
+// and one call carrying every entry could also exceed a single packet.
+// The count resizes (and so can shrink) the client mirror, since unlike
+// MapList/GameConfig this snapshot can legitimately change between
+// requests; each item then overwrites its own index.
+simulated function ReceiveZedVoteCount( int Count )
 {
-	ZedVoteNames = Names;
-	ZedVoteStates = States;
+	ZedVoteNames.Length = Count;
+	ZedVoteStates.Length = Count;
+}
+
+simulated function ReceiveZedVoteItem( int Index, string ZedName, byte ZedState )
+{
+	if( Index < 0 || Index >= ZedVoteNames.Length )
+		return;
+	ZedVoteNames[Index] = ZedName;
+	ZedVoteStates[Index] = ZedState;
 }
 
 
